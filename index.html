@@ -98,6 +98,7 @@ ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabula
 .sheet .ph{width:100%;max-height:260px;object-fit:cover;border-radius:12px;background:var(--bg)}
 .avatar{width:44px;height:44px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:8px;border:2px solid var(--matt)}
 .pin .face{width:46px;height:46px;border-radius:50%;object-fit:cover;border:3px solid var(--matt);background:var(--panel);box-shadow:0 2px 6px rgba(0,0,0,.35)}
+.version{margin:0;order:99;font-size:11px;color:var(--muted);text-align:center}
 @media (prefers-reduced-motion:reduce){.arrow svg{transition:none}}
 </style>
 </head>
@@ -139,6 +140,7 @@ ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabula
     <button id="followBtn" class="ghost" type="button">Follow: on</button>
     <button id="clearBtn" class="ghost" type="button">Clear trail</button>
   </div>
+  <p class="version" id="version">Walk Tracker · version 21 Oct 2026 · 10:20</p>
   <details id="stepsBox" open>
     <summary id="stepsSum">Directions</summary>
     <ol class="steps" id="steps"><li><span class="i">ⓘ</span><span>Start tracking to get directions from where you are.</span><span></span></li></ol>
@@ -149,6 +151,7 @@ ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabula
 <script>
 // Default destination: CVS, 2000 Pennsylvania Ave NW, Washington DC
 let dest = { lat: 38.9002258, lng: -77.046458, name: "CVS, 2000 Pennsylvania Ave NW" };
+const APP_VERSION = "21 Oct 2026 · 10:20";
 const SPEED = { foot: 1.35, bike: 4.5, car: 9 };          // fallback m/s for "time" when no route
 const STEP_AHEAD = { foot: 5, bike: 10, car: 20 };         // m before a turn when it becomes the current step
 const OFF_ROUTE = { foot: 40, bike: 50, car: 70 };         // m from the line before rerouting
@@ -182,19 +185,6 @@ function bearing(a, b) {
   const x = Math.cos(toRad(a.lat))*Math.sin(toRad(b.lat)) - Math.sin(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.cos(toRad(b.lng-a.lng));
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
-// Distance from point p to polyline pts (array of {lat,lng}), local flat projection
-function distToLine(p, pts) {
-  const k = Math.cos(toRad(p.lat)), M = 111320;
-  const xy = q => [(q.lng - p.lng) * k * M, (q.lat - p.lat) * M];
-  let best = Infinity;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const [ax, ay] = xy(pts[i]), [bx, by] = xy(pts[i+1]);
-    const dx = bx - ax, dy = by - ay, L2 = dx*dx + dy*dy;
-    const t = L2 ? Math.max(0, Math.min(1, -(ax*dx + ay*dy) / L2)) : 0;
-    best = Math.min(best, Math.hypot(ax + t*dx, ay + t*dy));
-  }
-  return best;
-}
 const fmtDist = m => m < 1000 ? Math.round(m / (m < 100 ? 5 : 10)) * (m < 100 ? 5 : 10) + " m" : (m/1000).toFixed(m < 10000 ? 2 : 1) + " km";
 const fmtTime = s => s < 60 ? "<1 min" : s < 3600 ? Math.round(s/60) + " min" : Math.floor(s/3600) + " h " + Math.round((s%3600)/60) + " min";
 function setStatus(t, cls = "") { const s = $("status"); s.textContent = t; s.className = "status " + cls; }
@@ -225,17 +215,14 @@ function instruction(s) {
 }
 
 /* ---------- street-sign directions (all modes) ----------
-   Every step is a named street. Crosswalks, sidewalk jogs, ramps and other unnamed
-   bits are folded into the street next to them. Walking and cycling routes run on
-   sidewalks that are mapped without names, so each stretch is matched to the street
-   beside it with the routing server's "nearest road" lookup. */
+   Routes arrive with street names. Every step is a named street: crosswalks, sidewalk jogs,
+   ramps and other short unnamed bits are folded into the street next to them. */
 const ABBR = [[/\bStreet\b/g,"St"],[/\bAvenue\b/g,"Ave"],[/\bBoulevard\b/g,"Blvd"],[/\bRoad\b/g,"Rd"],[/\bDrive\b/g,"Dr"],
   [/\bPlace\b/g,"Pl"],[/\bParkway\b/g,"Pkwy"],[/\bNorthwest\b/g,"NW"],[/\bNortheast\b/g,"NE"],[/\bSouthwest\b/g,"SW"],[/\bSoutheast\b/g,"SE"]];
 // "20th Street Northwest Cycletrack" is still 20th St NW for directions
 const cleanName = n => ABBR.reduce((s, [re, r]) => s.replace(re, r), (n || "").trim().replace(/\s+(Cycletrack|Cycle Track|Bike Lane|Bikeway|Sidewalk)$/i, ""));
 const MIN_RUN_M = { foot: 45, bike: 50, car: 50 };     // unnamed bits shorter than 4× this are folded away
 const MIN_NAMED_M = { foot: 15, bike: 20, car: 20 };   // a named street shorter than this is just a jog
-const NEAREST = "https://routing.openstreetmap.de/routed-car/nearest/v1/driving/";
 
 async function getJSON(url, ms = 8000) {
   const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms);
@@ -252,58 +239,6 @@ function pointAt(pts, cum, m) {
   let i = 1; while (i < cum.length - 1 && cum[i] < m) i++;
   const seg = cum[i] - cum[i-1] || 1, t = (m - cum[i-1]) / seg;
   return { lat: pts[i-1].lat + (pts[i].lat - pts[i-1].lat) * t, lng: pts[i-1].lng + (pts[i].lng - pts[i-1].lng) * t };
-}
-// Douglas-Peucker in metres: keeps only the corners that matter
-function corners(pts, tol) {
-  const k = Math.cos(toRad(pts[0].lat)), M = 111320, xy = pts.map(p => [p.lng * k * M, p.lat * M]);
-  const keep = new Set([0, pts.length - 1]), stack = [[0, pts.length - 1]];
-  while (stack.length) {
-    const [a, b] = stack.pop(); let best = 0, bi = -1;
-    const [ax, ay] = xy[a], [bx, by] = xy[b], dx = bx - ax, dy = by - ay, L = Math.hypot(dx, dy) || 1;
-    for (let i = a + 1; i < b; i++) { const d = Math.abs(dy * (xy[i][0] - ax) - dx * (xy[i][1] - ay)) / L; if (d > best) { best = d; bi = i; } }
-    if (best > tol) { keep.add(bi); stack.push([a, bi], [bi, b]); }
-  }
-  return [...keep].sort((x, y) => x - y);
-}
-// Name of the street running along heading b at p. First the routing server (fast, knows
-// which way the street runs); if it's busy, OpenStreetMap's address lookup (1 request a second).
-const streetCache = new Map();
-let nominatimNext = 0;
-async function nominatimRoad(p) {
-  const wait = Math.max(0, nominatimNext - Date.now()); nominatimNext = Date.now() + wait + 1100;
-  if (wait) await new Promise(r => setTimeout(r, wait));
-  const j = await getJSON(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${p.lat.toFixed(6)}&lon=${p.lng.toFixed(6)}&zoom=17&layer=address`, 8000);
-  return j.category === "highway" ? (j.address?.road || j.name || "") : (j.address?.road || "");
-}
-async function streetAt(p, b) {
-  const key = p.lat.toFixed(4) + "," + p.lng.toFixed(4) + "," + Math.round(b / 30);
-  if (streetCache.has(key)) return streetCache.get(key);
-  let name = "", serverOk = false;
-  for (const dir of [b, (b + 180) % 360]) {
-    try {
-      const r = await getJSON(`${NEAREST}${p.lng.toFixed(6)},${p.lat.toFixed(6)}?number=3&bearings=${Math.round(dir)},30`, 6000);
-      serverOk = true;
-      const w = (r.waypoints || []).find(w => w.name && w.distance <= 45);
-      if (w) { name = w.name; break; }
-    } catch (_) { break; }
-  }
-  if (!name && !serverOk) { try { name = await nominatimRoad(p); } catch (_) {} }
-  streetCache.set(key, name);
-  return name;
-}
-// Walking/cycling: cut the route into straight stretches and name each one
-async function sidewalkRuns(pts, cum) {
-  const idx = corners(pts, 12), legs = [];
-  for (let i = 0; i < idx.length - 1; i++) {
-    const a = cum[idx[i]], b = cum[idx[i + 1]], n = Math.max(1, Math.ceil((b - a) / 300));
-    for (let j = 0; j < n; j++) legs.push({ from: a + (b - a) * j / n, len: (b - a) / n, name: "" });
-  }
-  // stretches under 30 m are crossings or jogs and get folded away, so they aren't looked up
-  await pool(legs.filter(l => l.len >= 30), 2, async l => {
-    const p = pointAt(pts, cum, l.from + l.len / 2);
-    l.name = cleanName(await streetAt(p, bearing(pointAt(pts, cum, l.from), pointAt(pts, cum, l.from + l.len))));
-  });
-  return legs;
 }
 // Driving: the router already names streets
 function roadRuns(rt, total) {
@@ -427,8 +362,15 @@ async function osrmRoute(from, to, m) {
   return { pts, distance: rt.distance, duration: rt.duration, runs: roadRuns(rt, measure(pts).at(-1)) };
 }
 let routeAgain = false, retryTimer = null, routeFails = 0;
+const MAX_KM = { foot: 60, bike: 200, car: 3000 };
 async function fetchRoute() {
   if (!last || mode === "transit") return;
+  const km = distance(last, dest) / 1000;
+  if (km > MAX_KM[mode]) {
+    lastRouteAt = Date.now(); route = null; routeLine.setLatLngs([]); $("banner").hidden = true; renderSteps(); update();
+    return setStatus(`That's ${Math.round(km)} km away, too far to ${mode === "car" ? "drive here" : mode === "bike" ? "bike" : "walk"}. ` +
+      (dest.person ? "Their location may be inaccurate (a computer without GPS can be off by hundreds of km)." : "Check the destination or switch to Drive."), "err");
+  }
   if (routing) { routeAgain = true; return; }           // asked again while busy: do it once this one finishes
   routing = true; lastRouteAt = Date.now(); clearTimeout(retryTimer);
   const from = { ...last }, to = { lat: dest.lat, lng: dest.lng }, m = mode;
@@ -814,7 +756,7 @@ function renderFind() {
     waiting: () => [el("b", {}, "Waiting for Matt to approve…"), el("span", { class: "muted" }, "Keep this page open. The request expires in " + FM.answerMin + " minutes."), close],
     approved: () => [el("b", {}, "Matt approved"), el("span", { class: "muted" }, "Waiting for his first location…"), close],
     sharing: () => [el("b", {}, fm.mattFace ? el("img", { class: "avatar", src: fm.mattFace, alt: "" }) : null, "Matt is sharing his location"),
-      el("span", { class: "muted" }, `Updated ${ago(fm.locAt)} · directions below lead to him and update as he moves.` + (fm.until ? ` Sharing ends in ${Math.max(0, Math.ceil((fm.until - Date.now()) / 60000))} min.` : "")), close],
+      el("span", { class: "muted" }, `Updated ${ago(fm.locAt)} · directions below lead to him and update as he moves.` + roughNote(fm.loc?.acc) + (fm.until ? ` Sharing ends in ${Math.max(0, Math.ceil((fm.until - Date.now()) / 60000))} min.` : "")), close],
     denied: () => [el("b", {}, "Matt declined the request."), close],
     ended: () => [el("b", {}, "Matt stopped sharing his location."), el("span", { class: "muted" }, fm.loc ? "The map shows the last place he was seen." : ""), close],
     timeout: () => [el("b", {}, "Matt didn't answer."), el("span", { class: "muted" }, "His phone may be locked or the app closed. Try again later."), close],
@@ -947,6 +889,8 @@ async function shareBack(force) {
 }
 
 /* ----- Matt's own phone ----- */
+// Phones give ±5–30 m; a computer without GPS can be kilometres off. Say so when it's rough.
+const roughNote = acc => !acc || acc < 200 ? "" : ` Location is approximate (±${acc >= 1000 ? Math.round(acc / 1000) + " km" : Math.round(acc) + " m"}).`;
 const PIN_EMOJI = ["🙋", "🧑", "😎", "🧢", "🐻", "🦊"];
 let pinCount = 0;
 function placePin(s) {
@@ -1084,7 +1028,7 @@ function renderMatt() {
     kids.push(el("div", { class: "req" },
       el("span", {}, s.thumb ? el("img", { class: "avatar", src: s.thumb, alt: "" }) : null, "Sharing with ", el("b", {}, s.name), s.phone ? " · " + fmtPhone(s.phone) : "", ` · ${Math.max(0, Math.ceil((s.until - Date.now()) / 60000))} min left`),
       el("span", { class: "muted" }, s.friend
-        ? `${s.thumb ? "" : s.emoji + " "}${s.name} is ${here ? fmtDist(distance(here, s.friend)) + " away" : "on the map"} · seen ${ago(s.friend.at)}. Tap ${s.thumb ? "their photo" : s.emoji} on the map for directions.`
+        ? `${s.thumb ? "" : s.emoji + " "}${s.name} is ${here ? fmtDist(distance(here, s.friend)) + " away" : "on the map"} · seen ${ago(s.friend.at)}. Tap ${s.thumb ? "their photo" : s.emoji} on the map for directions.` + roughNote(s.friend.acc)
         : s.said === "no" ? `${s.name} chose not to share their location.` : `Waiting to see if ${s.name} shares their location…`),
       el("span", { class: "muted" }, s.sentAt ? "Your location sent " + ago(s.sentAt) : mattPos ? "Sending your location…" : "Waiting for your GPS…"),
       el("div", { class: "row" },
@@ -1349,7 +1293,7 @@ async function handleLink() {
     return;
   }
   if (!mattKey) return notice("This browser isn't set up as Matt's phone",
-    "Open your private setup link in this same browser, then tap the notification again. On iPhone, Safari and an app saved to the Home Screen are set up separately.");
+    "Open your private setup link in this same browser, then tap the notification again. Each browser (Chrome, Safari, an app saved to the Home Screen) and each web address is set up separately.");
   let req; try { req = JSON.parse(td.decode(b64u.dec(reqIn[1]))); } catch (_) { req = null; }
   const r = req ? await addRequest(req) : "bad";
   if (r === "blocked") return notice("Access is off", "You've turned off this person's access, so the request was declined. Turn it back on in Admin · People to let them find you.");
