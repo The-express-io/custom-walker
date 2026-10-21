@@ -32,6 +32,14 @@ body{background:var(--bg);color:var(--fg);font:15px/1.4 var(--font);display:flex
   padding:12px max(16px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
   display:grid;gap:10px;max-height:55vh;overflow-y:auto}
 .dest{display:flex;gap:8px}
+.route-form{display:flex;gap:8px;align-items:stretch}
+.route-form .fields{flex:1;min-width:0;display:grid;gap:6px}
+.route-form .field{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);padding:0 10px}
+.route-form .field:focus-within{outline:2px solid var(--accent);outline-offset:1px}
+.route-form .lbl{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);width:38px;flex:none}
+.route-form input{flex:1;min-width:0;border:0;background:transparent;color:var(--fg);font:inherit;padding:10px 0;outline:none}
+.route-form .side{display:grid;gap:6px;grid-template-rows:auto 1fr}
+.route-form .side button{padding:8px 14px}
 .dest input{flex:1;min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
 button{font:inherit;font-weight:600;border:0;border-radius:8px;padding:10px 14px;cursor:pointer;background:var(--accent);color:#fff}
 button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}
@@ -111,9 +119,17 @@ ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabula
   </div>
 </div>
 <div class="panel">
-  <form class="dest" id="destForm">
-    <input id="destInput" type="text" placeholder="Search a destination" autocomplete="off">
-    <button type="submit">Go</button>
+  <form class="route-form" id="destForm">
+    <div class="fields">
+      <label class="field"><span class="lbl">From</span>
+        <input id="fromInput" type="text" placeholder="My location" autocomplete="off" aria-label="Starting point (leave empty for my location)"></label>
+      <label class="field"><span class="lbl">To</span>
+        <input id="destInput" type="text" placeholder="Search a destination" autocomplete="off" aria-label="Destination"></label>
+    </div>
+    <div class="side">
+      <button type="button" class="ghost" id="swapBtn" title="Swap From and To" aria-label="Swap From and To">⇅</button>
+      <button type="submit">Go</button>
+    </div>
   </form>
   <button id="findBtn" class="find" type="button">📍 Find Matt</button>
   <div class="card" id="fmCard" hidden></div>
@@ -140,7 +156,7 @@ ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabula
     <button id="followBtn" class="ghost" type="button">Follow: on</button>
     <button id="clearBtn" class="ghost" type="button">Clear trail</button>
   </div>
-  <p class="version" id="version">Walk Tracker · version 21 Oct 2026 · 10:20</p>
+  <p class="version" id="version">Walk Tracker · version 21 Oct 2026 · 10:30</p>
   <details id="stepsBox" open>
     <summary id="stepsSum">Directions</summary>
     <ol class="steps" id="steps"><li><span class="i">ⓘ</span><span>Start tracking to get directions from where you are.</span><span></span></li></ol>
@@ -151,7 +167,7 @@ ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabula
 <script>
 // Default destination: CVS, 2000 Pennsylvania Ave NW, Washington DC
 let dest = { lat: 38.9002258, lng: -77.046458, name: "CVS, 2000 Pennsylvania Ave NW" };
-const APP_VERSION = "21 Oct 2026 · 10:20";
+const APP_VERSION = "21 Oct 2026 · 10:30";
 const SPEED = { foot: 1.35, bike: 4.5, car: 9 };          // fallback m/s for "time" when no route
 const STEP_AHEAD = { foot: 5, bike: 10, car: 20 };         // m before a turn when it becomes the current step
 const OFF_ROUTE = { foot: 40, bike: 50, car: 70 };         // m from the line before rerouting
@@ -363,9 +379,12 @@ async function osrmRoute(from, to, m) {
 }
 let routeAgain = false, retryTimer = null, routeFails = 0;
 const MAX_KM = { foot: 60, bike: 200, car: 3000 };
+// Where directions start: a typed "From" place, otherwise wherever the phone is
+let fromPlace = null;
+const startPoint = () => fromPlace || last;
 async function fetchRoute() {
-  if (!last || mode === "transit") return;
-  const km = distance(last, dest) / 1000;
+  if (!startPoint() || mode === "transit") return;
+  const km = distance(startPoint(), dest) / 1000;
   if (km > MAX_KM[mode]) {
     lastRouteAt = Date.now(); route = null; routeLine.setLatLngs([]); $("banner").hidden = true; renderSteps(); update();
     return setStatus(`That's ${Math.round(km)} km away, too far to ${mode === "car" ? "drive here" : mode === "bike" ? "bike" : "walk"}. ` +
@@ -373,7 +392,7 @@ async function fetchRoute() {
   }
   if (routing) { routeAgain = true; return; }           // asked again while busy: do it once this one finishes
   routing = true; lastRouteAt = Date.now(); clearTimeout(retryTimer);
-  const from = { ...last }, to = { lat: dest.lat, lng: dest.lng }, m = mode;
+  const from = { ...startPoint() }, to = { lat: dest.lat, lng: dest.lng }, m = mode;
   if (!route) setStatus("Getting " + { foot: "walking", bike: "cycling", car: "driving" }[m] + " directions…");
   try {
     let r;
@@ -460,7 +479,7 @@ function renderSteps() {
 
 function renderTransit() {
   $("stepsSum").textContent = "Transit directions";
-  const origin = last ? `${last.lat},${last.lng}` : "";
+  const sp = startPoint(), origin = sp ? `${sp.lat},${sp.lng}` : "";
   const g = `https://www.google.com/maps/dir/?api=1${origin ? "&origin=" + origin : ""}&destination=${dest.lat},${dest.lng}&travelmode=transit`;
   const a = `https://maps.apple.com/?${origin ? "saddr=" + origin + "&" : ""}daddr=${dest.lat},${dest.lng}&dirflg=r`;
   $("steps").innerHTML = `<li style="display:block;padding:0"><div class="transit">
@@ -471,7 +490,12 @@ function renderTransit() {
 
 /* ---------- live updates ---------- */
 function update() {
-  if (!last) return;
+  if (!last) {                                          // no GPS yet, but a route from a typed start
+    if (route) { $("dist").textContent = fmtDist(route.dist); $("eta").textContent = fmtTime(route.dur);
+                 const n = route.steps[1] || route.steps[0]; $("banner").hidden = false; $("bIcon").textContent = n.icon;
+                 $("bDist").textContent = fmtDist(route.steps[0].dist); $("bText").textContent = n.text; renderSteps(); }
+    return;
+  }
   const direct = distance(last, dest);
   const b = bearing(last, dest);
   $("arrowSvg").style.transform = `rotate(${heading != null ? b - heading : b}deg)`;
@@ -481,7 +505,7 @@ function update() {
     // Readings worse than ±50 m are shown on the map but don't move the steps or trigger a reroute
     const good = !lastAcc || lastAcc <= 50;
     const pr = projectOnRoute(route, last, route.prog);
-    if (good) route.prog = pr.along;
+    if (good && (!fromPlace || pr.dist <= 60)) route.prog = pr.along;   // typed start: only once you're actually on the route
     while (stepIdx < steps.length - 1 && steps[stepIdx + 1].at <= route.prog + STEP_AHEAD[mode]) stepIdx++;
     const next = steps[Math.min(stepIdx + 1, steps.length - 1)];
     const toNext = Math.max(0, next.at - route.prog);
@@ -494,7 +518,7 @@ function update() {
     $("bIcon").textContent = next.icon; $("bDist").textContent = fmtDist(toNext); $("bText").textContent = next.text;
     renderSteps();
     // Off route: three good readings in a row clearly away from the line, and not more than every 20 s
-    if (good && pr.dist > Math.max(OFF_ROUTE[mode], (lastAcc || 0) * 1.5)) {
+    if (good && !fromPlace && pr.dist > Math.max(OFF_ROUTE[mode], (lastAcc || 0) * 1.5)) {
       if (++offCount >= 3 && Date.now() - lastRouteAt > 20000) { setStatus("Off route. Finding a new way…"); fetchRoute(); }
     } else if (good) offCount = 0;
   } else {
@@ -579,27 +603,59 @@ document.addEventListener("visibilitychange", async () => {
     try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) {}
 });
 
-// Destination search (OpenStreetMap Nominatim)
+// Place search (OpenStreetMap Nominatim), biased to the area you're in
+async function geocode(q) {
+  const near = last || fromPlace || dest;
+  let url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(q);
+  if (near) url += `&viewbox=${near.lng - 0.1},${near.lat + 0.1},${near.lng + 0.1},${near.lat - 0.1}`;
+  const r = await getJSON(url, 10000);
+  if (!r.length) return null;
+  return { lat: +r[0].lat, lng: +r[0].lon, name: r[0].display_name.split(",").slice(0, 2).join(",") };
+}
+const isMyLocation = t => !t || /^(my location|current location|here)$/i.test(t.trim());
+const startMarker = L.circleMarker([0, 0], { radius: 7, color: "#fff", weight: 3, fillColor: "#1a9e5c", fillOpacity: 1 });
 $("destForm").addEventListener("submit", async e => {
   e.preventDefault();
-  const q = $("destInput").value.trim(); if (!q) return;
+  const fq = $("fromInput").value.trim(), q = $("destInput").value.trim();
+  if (!q) return $("destInput").focus();
   if (fm && q !== "Matt") cancelFind(true);
   setStatus("Searching…");
   try {
-    let url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(q);
-    if (last) url += `&viewbox=${last.lng-0.1},${last.lat+0.1},${last.lng+0.1},${last.lat-0.1}`;
-    const r = await (await fetch(url, { headers: { "Accept": "application/json" } })).json();
-    if (!r.length) return setStatus("No match for “" + q + "”. Try adding a city.", "err");
-    dest = { lat: +r[0].lat, lng: +r[0].lon, name: r[0].display_name.split(",").slice(0, 2).join(",") };
+    // From: typed place, or my location
+    if (isMyLocation(fq)) { fromPlace = null; $("fromInput").value = ""; map.removeLayer(startMarker); }
+    else if (!fromPlace || fq !== fromPlace.name) {
+      const f = await geocode(fq);
+      if (!f) return setStatus("No match for “" + fq + "” in From. Try adding a city.", "err");
+      fromPlace = f; $("fromInput").value = f.name;
+      startMarker.setLatLng([f.lat, f.lng]).bindPopup("Start: " + f.name).addTo(map);
+    }
+    // To
+    if (q !== dest.name) {
+      const d = await geocode(q);
+      if (!d) return setStatus("No match for “" + q + "”. Try adding a city.", "err");
+      dest = d; $("destInput").value = d.name;
+    }
     destMarker.setLatLng([dest.lat, dest.lng]).bindPopup(dest.name).setOpacity(1);
     if (typeof guiding !== "undefined") guiding = null;
-    arrived = false; route = null; routeLine.setLatLngs([]);
-    map.fitBounds(last ? [[last.lat, last.lng], [dest.lat, dest.lng]] : [[dest.lat, dest.lng], [dest.lat, dest.lng]], { padding: [60, 40], maxZoom: 16 });
-    setStatus("Destination set: " + dest.name, "ok");
-    if (mode === "transit") renderSteps(); else if (last) fetchRoute();
+    arrived = false; route = null; routeLine.setLatLngs([]); stepIdx = 0;
+    const sp = startPoint();
+    map.fitBounds(sp ? [[sp.lat, sp.lng], [dest.lat, dest.lng]] : [[dest.lat, dest.lng], [dest.lat, dest.lng]], { padding: [60, 40], maxZoom: 16 });
+    setStatus((fromPlace ? `From ${fromPlace.name} to ` : "Destination set: ") + dest.name, "ok");
+    if (mode === "transit") renderSteps();
+    else if (sp) fetchRoute();
+    else setStatus("Destination set. Tap Start tracking, or type a From place, to get directions.", "ok");
     update();
   } catch (_) { setStatus("Search failed. Check your connection.", "err"); }
 });
+// Swap From and To (an empty From means my location)
+$("swapBtn").onclick = () => {
+  const f = $("fromInput").value.trim(), t = $("destInput").value.trim();
+  $("fromInput").value = isMyLocation(t) ? "" : t;
+  $("destInput").value = isMyLocation(f) ? (last ? "My location" : "") : f;
+  if (isMyLocation(f) && last) { dest = { lat: last.lat, lng: last.lng, name: "My location" }; }
+  fromPlace = null;                                    // looked up again when Go is tapped
+  $("destForm").requestSubmit ? $("destForm").requestSubmit() : $("destForm").dispatchEvent(new Event("submit"));
+};
 
 /* ---------- Find Matt ----------
    Requests and replies travel through ntfy.sh, a free message relay. Matt's replies are
@@ -860,6 +916,7 @@ async function onMattReply(raw) {
 }
 // Make a moving person the destination. `track` remembers where we last routed to.
 function followPerson(name, p, track, emojiPin) {
+  if (fromPlace) { fromPlace = null; $("fromInput").value = ""; map.removeLayer(startMarker); }
   dest = { lat: p.lat, lng: p.lng, name, person: true };
   destMarker.setLatLng([p.lat, p.lng]).bindPopup(name + " · ±" + Math.round(p.acc || 0) + " m").setOpacity(emojiPin ? 0 : 1);
   $("destInput").value = name;
