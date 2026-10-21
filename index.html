@@ -30,7 +30,15 @@ body{background:var(--bg);color:var(--fg);font:15px/1.4 var(--font);display:flex
 .banner .tx{font-weight:600;font-size:15px}
 .panel{background:var(--panel);border-top:1px solid var(--line);
   padding:12px max(16px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
-  display:grid;gap:10px;max-height:55vh;overflow-y:auto}
+  display:grid;gap:10px;max-height:55vh;overflow-y:auto;grid-auto-rows:max-content;align-content:start}
+/* Wide screens: map on the left, controls in a sidebar on the right, both full height */
+@media (min-width:900px){
+  body{flex-direction:row}
+  .mapwrap{flex:1;min-width:0;order:1}
+  .panel{order:2;width:420px;flex:none;max-height:none;height:100%;border-top:0;border-left:1px solid var(--line);
+    padding:16px 20px calc(16px + env(safe-area-inset-bottom)) 20px}
+  .banner{right:20px;left:20px;max-width:640px}
+}
 .dest{display:flex;gap:8px}
 .route-form{display:flex;gap:8px;align-items:stretch}
 .route-form .fields{flex:1;min-width:0;display:grid;gap:6px}
@@ -45,7 +53,7 @@ button{font:inherit;font-weight:600;border:0;border-radius:8px;padding:10px 14px
 button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}
 button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 button:disabled{opacity:.45;cursor:not-allowed}
-.modes{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.modes{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:8px;overflow:hidden;min-height:max-content}
 .modes button{border-radius:0;background:transparent;color:var(--fg);padding:8px 4px;font-size:14px;border-left:1px solid var(--line)}
 .modes button:first-child{border-left:0}
 .modes button[aria-pressed="true"]{background:var(--accent);color:#fff}
@@ -156,7 +164,7 @@ ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabula
     <button id="followBtn" class="ghost" type="button">Follow: on</button>
     <button id="clearBtn" class="ghost" type="button">Clear trail</button>
   </div>
-  <p class="version" id="version">Walk Tracker · version 21 Oct 2026 · 10:30</p>
+  <p class="version" id="version">Walk Tracker · version 21 Oct 2026 · 10:40</p>
   <details id="stepsBox" open>
     <summary id="stepsSum">Directions</summary>
     <ol class="steps" id="steps"><li><span class="i">ⓘ</span><span>Start tracking to get directions from where you are.</span><span></span></li></ol>
@@ -167,7 +175,7 @@ ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabula
 <script>
 // Default destination: CVS, 2000 Pennsylvania Ave NW, Washington DC
 let dest = { lat: 38.9002258, lng: -77.046458, name: "CVS, 2000 Pennsylvania Ave NW" };
-const APP_VERSION = "21 Oct 2026 · 10:30";
+const APP_VERSION = "21 Oct 2026 · 10:40";
 const SPEED = { foot: 1.35, bike: 4.5, car: 9 };          // fallback m/s for "time" when no route
 const STEP_AHEAD = { foot: 5, bike: 10, car: 20 };         // m before a turn when it becomes the current step
 const OFF_ROUTE = { foot: 40, bike: 50, car: 70 };         // m from the line before rerouting
