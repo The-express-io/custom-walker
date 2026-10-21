@@ -150,7 +150,7 @@ ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabula
 // Default destination: CVS, 2000 Pennsylvania Ave NW, Washington DC
 let dest = { lat: 38.9002258, lng: -77.046458, name: "CVS, 2000 Pennsylvania Ave NW" };
 const SPEED = { foot: 1.35, bike: 4.5, car: 9 };          // fallback m/s for "time" when no route
-const STEP_HIT = { foot: 15, bike: 25, car: 40 };          // m from a turn to count it as passed
+const STEP_AHEAD = { foot: 5, bike: 10, car: 20 };         // m before a turn when it becomes the current step
 const OFF_ROUTE = { foot: 40, bike: 50, car: 70 };         // m from the line before rerouting
 const ARRIVE_M = 30;
 const ROUTER = m => `https://routing.openstreetmap.de/routed-${m}/route/v1/driving/`;
@@ -231,8 +231,10 @@ function instruction(s) {
    beside it with the routing server's "nearest road" lookup. */
 const ABBR = [[/\bStreet\b/g,"St"],[/\bAvenue\b/g,"Ave"],[/\bBoulevard\b/g,"Blvd"],[/\bRoad\b/g,"Rd"],[/\bDrive\b/g,"Dr"],
   [/\bPlace\b/g,"Pl"],[/\bParkway\b/g,"Pkwy"],[/\bNorthwest\b/g,"NW"],[/\bNortheast\b/g,"NE"],[/\bSouthwest\b/g,"SW"],[/\bSoutheast\b/g,"SE"]];
-const cleanName = n => ABBR.reduce((s, [re, r]) => s.replace(re, r), (n || "").trim());
-const MIN_RUN_M = { foot: 45, bike: 50, car: 50 };
+// "20th Street Northwest Cycletrack" is still 20th St NW for directions
+const cleanName = n => ABBR.reduce((s, [re, r]) => s.replace(re, r), (n || "").trim().replace(/\s+(Cycletrack|Cycle Track|Bike Lane|Bikeway|Sidewalk)$/i, ""));
+const MIN_RUN_M = { foot: 45, bike: 50, car: 50 };     // unnamed bits shorter than 4× this are folded away
+const MIN_NAMED_M = { foot: 15, bike: 20, car: 20 };   // a named street shorter than this is just a jog
 const NEAREST = "https://routing.openstreetmap.de/routed-car/nearest/v1/driving/";
 
 async function getJSON(url, ms = 8000) {
@@ -318,25 +320,26 @@ function foldRuns(runs) {
   // Repeatedly hand the shortest offending stretch to a neighbour, so long streets absorb their crossings
   for (let guard = 0; guard < 500 && runs.length > 1; guard++) {
     let worst = -1;
-    runs.forEach((r, i) => { if ((r.len < min || (!r.name && r.len < min * 4)) && (worst < 0 || r.len < runs[worst].len)) worst = i; });
+    runs.forEach((r, i) => { if ((r.name ? r.len < MIN_NAMED_M[mode] : r.len < min * 4) && (worst < 0 || r.len < runs[worst].len)) worst = i; });
     if (worst < 0) break;
     const a = runs[worst - 1], b = runs[worst + 1];
     const pick = !a ? b : !b ? a : (a.name && !b.name) ? a : (!a.name && b.name) ? b : a.len >= b.len ? a : b;
     if (worst > 0 && pick === a) a.len += runs[worst].len;
-    else { b.from = runs[worst].from; b.len += runs[worst].len; }
+    else { b.head ??= b.from; b.from = runs[worst].from; b.len += runs[worst].len; }   // remember where the street itself starts
     runs.splice(worst, 1);
     runs = join(runs);
   }
   return runs;
 }
-async function buildSteps(rt, pts) {
+async function buildSteps(rt, pts, given) {
   const cum = measure(pts), total = cum[cum.length - 1];
-  const runs = foldRuns(mode === "car" ? roadRuns(rt, total) : await sidewalkRuns(pts, cum));
+  const runs = foldRuns(given || roadRuns(rt, total));
   const steps = runs.map((r, i) => {
-    const from = r.from, after = bearing(pointAt(pts, cum, from), pointAt(pts, cum, from + 30));
+    // the step starts where it starts, but its direction is read where the named street begins
+    const from = r.from, at = r.head ?? r.from, after = bearing(pointAt(pts, cum, at), pointAt(pts, cum, at + 30));
     let mod;
     if (i) {
-      const before = bearing(pointAt(pts, cum, from - 30), pointAt(pts, cum, from));
+      const before = bearing(pointAt(pts, cum, at - 30), pointAt(pts, cum, at));
       const d = ((after - before + 540) % 360) - 180, a = Math.abs(d), side = d > 0 ? "right" : "left";
       mod = a < 25 ? "straight" : a < 60 ? "slight " + side : a < 140 ? side : a < 170 ? "sharp " + side : "uturn";
     }
@@ -353,7 +356,15 @@ async function buildSteps(rt, pts) {
    Only places with a Wikipedia article that people actually read (page views in
    the last 30 days) count as landmarks, so shops and minor buildings are left out. */
 const LANDMARK_MIN_VIEWS = 1500, LANDMARK_RADIUS = 120;
+const landmarkCache = new Map();
 async function landmarkNear(p, avoid) {
+  const ck = p.lat.toFixed(4) + "," + p.lng.toFixed(4) + "|" + [...avoid].join("|");
+  if (landmarkCache.has(ck)) return landmarkCache.get(ck);
+  const found = await landmarkLookup(p, avoid);
+  landmarkCache.set(ck, found);
+  return found;
+}
+async function landmarkLookup(p, avoid) {
   const url = "https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&generator=geosearch" +
     `&ggscoord=${p.lat.toFixed(6)}|${p.lng.toFixed(6)}&ggsradius=${LANDMARK_RADIUS}&ggslimit=20&prop=pageviews|coordinates&pvipdays=30`;
   const pages = Object.values((await getJSON(url)).query?.pages || {});
@@ -376,37 +387,103 @@ async function addLandmarks(rt) {
   renderSteps(); update();
 }
 
-/* ---------- routing ---------- */
+/* ---------- routing ----------
+   Valhalla (OpenStreetMap) first: one request, and it names the streets even for walking.
+   The older OSRM server is the backup. Every request has a time limit, a failed update never
+   erases a route that's working, and failures retry on their own. */
+const VALHALLA = "https://valhalla1.openstreetmap.de/route";
+const COSTING = { foot: "pedestrian", bike: "bicycle", car: "auto" };
+function decodePolyline6(str) {
+  const pts = []; let i = 0, lat = 0, lng = 0;
+  while (i < str.length) {
+    for (const k of [0, 1]) {
+      let shift = 0, result = 0, b;
+      do { b = str.charCodeAt(i++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+      const d = result & 1 ? ~(result >> 1) : result >> 1;
+      if (k === 0) lat += d; else lng += d;
+    }
+    pts.push({ lat: lat / 1e6, lng: lng / 1e6 });
+  }
+  return pts;
+}
+async function valhallaRoute(from, to, m) {
+  const q = { locations: [{ lat: from.lat, lon: from.lng }, { lat: to.lat, lon: to.lng }], costing: COSTING[m],
+    directions_options: { units: "kilometers" },
+    // walking: prefer streets over separately mapped sidewalks, so every step has a street name
+    costing_options: m === "foot" ? { pedestrian: { sidewalk_factor: 10, walkway_factor: 10, alley_factor: 10, driveway_factor: 10 } } : {} };
+  const j = await getJSON(VALHALLA + "?json=" + encodeURIComponent(JSON.stringify(q)), 10000);
+  const leg = j.trip?.legs?.[0];
+  if (!leg?.shape) throw new Error(j.error || "no route");
+  const pts = decodePolyline6(leg.shape), cum = measure(pts);
+  const runs = leg.maneuvers.filter(x => ![4, 5, 6].includes(x.type))        // 4–6 are "you have arrived"
+    .map(x => ({ from: cum[x.begin_shape_index] || 0, len: Math.max(0, (cum[x.end_shape_index] || 0) - (cum[x.begin_shape_index] || 0)),
+                 name: cleanName((x.street_names || [])[0] || "") }));
+  return { pts, distance: j.trip.summary.length * 1000, duration: j.trip.summary.time, runs };
+}
+async function osrmRoute(from, to, m) {
+  const r = await getJSON(ROUTER(m) + `${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson&steps=true`, 10000);
+  if (r.code !== "Ok" || !r.routes?.length) throw new Error(r.message || "no route");
+  const rt = r.routes[0], pts = rt.geometry.coordinates.map(c => ({ lat: c[1], lng: c[0] }));
+  return { pts, distance: rt.distance, duration: rt.duration, runs: roadRuns(rt, measure(pts).at(-1)) };
+}
+let routeAgain = false, retryTimer = null, routeFails = 0;
 async function fetchRoute() {
-  if (!last || mode === "transit" || routing) return;
-  routing = true; lastRouteAt = Date.now();
-  setStatus("Getting " + { foot:"walking", bike:"cycling", car:"driving" }[mode] + " directions…");
+  if (!last || mode === "transit") return;
+  if (routing) { routeAgain = true; return; }           // asked again while busy: do it once this one finishes
+  routing = true; lastRouteAt = Date.now(); clearTimeout(retryTimer);
+  const from = { ...last }, to = { lat: dest.lat, lng: dest.lng }, m = mode;
+  if (!route) setStatus("Getting " + { foot: "walking", bike: "cycling", car: "driving" }[m] + " directions…");
   try {
-    const url = ROUTER(mode) + `${last.lng},${last.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson&steps=true`;
-    const r = await (await fetch(url)).json();
-    if (r.code !== "Ok" || !r.routes.length) throw new Error(r.message || "No route found");
-    const rt = r.routes[0];
-    const pts = rt.geometry.coordinates.map(c => ({ lat: c[1], lng: c[0] }));
-    routeLine.setLatLngs(pts.map(p => [p.lat, p.lng]));
-    if (mode !== "car") setStatus("Matching streets…");
-    const rawSteps = await buildSteps(rt, pts);
-    const steps = rawSteps.map(s => ({ ...instruction(s), dist: s.distance, dur: s.duration,
-      type: s.maneuver.type, road: s.name || "",
-      loc: { lat: s.maneuver.location[1], lng: s.maneuver.location[0] } }));
-    route = { pts, steps, dist: rt.distance, dur: rt.duration };
-    stepIdx = 0; offCount = 0;
+    let r;
+    try { r = await valhallaRoute(from, to, m); } catch (_) { r = await osrmRoute(from, to, m); }
+    if (m !== mode || to.lat !== dest.lat || to.lng !== dest.lng) { routeAgain = true; return; }   // things changed while waiting
+    const rawSteps = await buildSteps({ duration: r.duration }, r.pts, r.runs);
+    let at = 0;
+    const steps = rawSteps.map(x => { const st = { ...instruction(x), dist: x.distance, dur: x.duration, type: x.maneuver.type, road: x.name || "",
+      loc: { lat: x.maneuver.location[1], lng: x.maneuver.location[0] }, at }; at += x.distance; return st; });
+    route = { pts: r.pts, cum: measure(r.pts), steps, dist: r.distance, dur: r.duration, prog: 0 };
+    stepIdx = 0; offCount = 0; routeFails = 0;
     routeLine.setLatLngs(route.pts.map(p => [p.lat, p.lng]));
     crow.setLatLngs([]);
     renderSteps();
-    setStatus(`Route ready · ${fmtDist(rt.distance)} · ${fmtTime(rt.duration)}`, "ok");
+    setStatus(`Route ready · ${fmtDist(r.distance)} · ${fmtTime(r.duration)}`, "ok");
     update();
-    addLandmarks(route);
+    addLandmarks(route).catch(() => {});
   } catch (e) {
-    route = null; routeLine.setLatLngs([]); $("banner").hidden = true;
-    setStatus("Couldn't get directions (" + e.message + "). Showing straight-line guidance.", "err");
-    renderSteps();
-  } finally { routing = false; }
+    routeFails++;
+    if (route) setStatus("Couldn't update the route, so the last one is still shown. Trying again shortly…", "err");
+    else { routeLine.setLatLngs([]); $("banner").hidden = true; renderSteps();
+           setStatus("Couldn't get directions right now. The arrow points the straight-line way; trying again shortly…", "err"); }
+    retryTimer = setTimeout(fetchRoute, Math.min(60000, 8000 * routeFails));
+  } finally {
+    routing = false;
+    if (routeAgain) { routeAgain = false; setTimeout(fetchRoute, 0); }
+  }
 }
+// Where along the route line you are. Searches near the last known spot first, so a parallel
+// street or a GPS jump doesn't make the steps skip around.
+function projectOnRoute(rt, p, near) {
+  const k = Math.cos(toRad(p.lat)), M = 111320, pts = rt.pts, cum = rt.cum;
+  const scan = (lo, hi) => {
+    let best = { dist: Infinity, along: 0 };
+    for (let i = 0; i < pts.length - 1; i++) {
+      if (cum[i + 1] < lo || cum[i] > hi) continue;
+      const ax = (pts[i].lng - p.lng) * k * M, ay = (pts[i].lat - p.lat) * M, bx = (pts[i + 1].lng - p.lng) * k * M, by = (pts[i + 1].lat - p.lat) * M;
+      const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+      const t = L2 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / L2)) : 0;
+      const d = Math.hypot(ax + t * dx, ay + t * dy);
+      if (d < best.dist) best = { dist: d, along: cum[i] + t * (cum[i + 1] - cum[i]) };
+    }
+    return best;
+  };
+  const local = scan(near - 60, near + 400);
+  return local.dist <= 60 ? local : scan(-Infinity, Infinity);
+}
+// If directions ever stall with no route, start them again
+setInterval(() => {
+  if (watchId != null && last && !route && !routing && mode !== "transit" && Date.now() - lastRouteAt > 20000) fetchRoute();
+}, 10000);
+addEventListener("error", e => { if (/Script error/.test(e.message || "")) return; setStatus("Something went wrong (" + (e.message || "error") + "). Directions will keep trying.", "err"); });
 
 function renderSteps() {
   const ol = $("steps"); ol.innerHTML = "";
@@ -458,23 +535,26 @@ function update() {
   $("arrowSvg").style.transform = `rotate(${heading != null ? b - heading : b}deg)`;
 
   if (route && mode !== "transit") {
-    const steps = route.steps;
-    // advance past any upcoming turn we've reached
-    while (stepIdx < steps.length - 1 && distance(last, steps[stepIdx + 1].loc) < STEP_HIT[mode]) stepIdx++;
+    const steps = route.steps, total = route.cum[route.cum.length - 1] || route.dist;
+    // Readings worse than ±50 m are shown on the map but don't move the steps or trigger a reroute
+    const good = !lastAcc || lastAcc <= 50;
+    const pr = projectOnRoute(route, last, route.prog);
+    if (good) route.prog = pr.along;
+    while (stepIdx < steps.length - 1 && steps[stepIdx + 1].at <= route.prog + STEP_AHEAD[mode]) stepIdx++;
     const next = steps[Math.min(stepIdx + 1, steps.length - 1)];
-    const toNext = distance(last, next.loc);
+    const toNext = Math.max(0, next.at - route.prog);
     route.toNext = stepIdx < steps.length - 1 ? toNext : 0;
-    let remaining = toNext; for (let i = stepIdx + 2; i < steps.length; i++) remaining += steps[i - 1].dist;
-    const remainingDur = route.dist ? route.dur * (remaining / route.dist) : remaining / SPEED[mode];
+    const remaining = Math.max(0, total - route.prog);
+    const remainingDur = total ? route.dur * (remaining / total) : remaining / SPEED[mode];
     $("dist").textContent = fmtDist(remaining);
     $("eta").textContent = fmtTime(remainingDur);
     $("banner").hidden = false;
     $("bIcon").textContent = next.icon; $("bDist").textContent = fmtDist(toNext); $("bText").textContent = next.text;
     renderSteps();
-    // off-route check
-    if (distToLine(last, route.pts) > OFF_ROUTE[mode]) {
-      if (++offCount >= 3 && Date.now() - lastRouteAt > 10000) { setStatus("Off route. Rerouting…"); fetchRoute(); }
-    } else offCount = 0;
+    // Off route: three good readings in a row clearly away from the line, and not more than every 20 s
+    if (good && pr.dist > Math.max(OFF_ROUTE[mode], (lastAcc || 0) * 1.5)) {
+      if (++offCount >= 3 && Date.now() - lastRouteAt > 20000) { setStatus("Off route. Finding a new way…"); fetchRoute(); }
+    } else if (good) offCount = 0;
   } else {
     $("dist").textContent = fmtDist(direct);
     $("eta").textContent = mode === "transit" ? "--" : fmtTime(direct / SPEED[mode]);
