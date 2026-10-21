@@ -1,0 +1,1288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1720">
+<title>Walk Tracker</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+/* Layout: full-screen map, next-turn banner on top, instrument panel docked at the bottom */
+:root{
+  --bg:#f3f5f7; --panel:#ffffff; --fg:#14202b; --muted:#5d6b78;
+  --line:#d9dfe5; --accent:#0a7cff; --dest:#d93a3a; --good:#1a9e5c; --hl:#e8f2ff; --matt:#6b3fd6; --matt-bg:#f1ecff;
+  --font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f1720; --panel:#17212c; --fg:#e8eef4; --muted:#8fa0b0;
+  --line:#2a3644; --accent:#4da3ff; --dest:#ff6b6b; --good:#3ccf86; --hl:#1d3550; --matt:#a688ff; --matt-bg:#231c3a; color-scheme:dark}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.4 var(--font);display:flex;flex-direction:column}
+.mapwrap{flex:1;min-height:0;position:relative}
+#map{position:absolute;inset:0}
+.banner{position:absolute;z-index:500;top:calc(10px + env(safe-area-inset-top));left:max(10px,env(safe-area-inset-left));right:max(10px,env(safe-area-inset-right));
+  background:var(--accent);color:#fff;border-radius:12px;padding:10px 14px;display:flex;gap:12px;align-items:center;box-shadow:0 4px 16px rgba(0,0,0,.25)}
+.banner .ic{font-size:26px;line-height:1;width:30px;text-align:center}
+.banner .in{font:700 22px/1.1 var(--mono);font-variant-numeric:tabular-nums}
+.banner .tx{font-weight:600;font-size:15px}
+.panel{background:var(--panel);border-top:1px solid var(--line);
+  padding:12px max(16px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
+  display:grid;gap:10px;max-height:55vh;overflow-y:auto}
+.dest{display:flex;gap:8px}
+.dest input{flex:1;min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
+button{font:inherit;font-weight:600;border:0;border-radius:8px;padding:10px 14px;cursor:pointer;background:var(--accent);color:#fff}
+button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button:disabled{opacity:.45;cursor:not-allowed}
+.modes{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.modes button{border-radius:0;background:transparent;color:var(--fg);padding:8px 4px;font-size:14px;border-left:1px solid var(--line)}
+.modes button:first-child{border-left:0}
+.modes button[aria-pressed="true"]{background:var(--accent);color:#fff}
+.stats{display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:12px;align-items:center}
+.arrow{width:52px;height:52px;border-radius:50%;border:1px solid var(--line);display:grid;place-items:center}
+.arrow svg{width:30px;height:30px;transition:transform .3s}
+.stat b{display:block;font:600 20px/1.1 var(--mono);font-variant-numeric:tabular-nums}
+.stat span{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.status{font-size:13px;color:var(--muted)}
+.status.ok{color:var(--good)} .status.err{color:var(--dest)}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row button{flex:1}
+details{border:1px solid var(--line);border-radius:8px}
+summary{padding:10px 12px;cursor:pointer;font-weight:600}
+ol.steps{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+ol.steps li{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-top:1px solid var(--line);align-items:center}
+ol.steps li:first-child{border-top:0}
+ol.steps li.cur{background:var(--hl);box-shadow:inset 4px 0 0 var(--accent);font-weight:600}
+ol.steps .now{display:block;font:700 11px var(--font);letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:2px}
+ol.steps .i{font-size:18px;text-align:center}
+ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.transit{padding:12px;display:grid;gap:8px}
+.transit a{color:var(--accent);font-weight:600;word-break:break-word}
+.find{background:var(--matt);font-size:16px;padding:12px 14px}
+.card{border:1px solid var(--matt);background:var(--matt-bg);border-radius:10px;padding:12px;display:grid;gap:8px}
+.card .muted,.muted{color:var(--muted);font-size:13px}
+.card .req{display:grid;gap:6px;padding-top:8px;border-top:1px solid var(--line)}
+.card button:not(.ghost){background:var(--matt)}
+.fmform{display:grid;gap:8px}
+.fmform input{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit;min-width:0}
+.hint{color:var(--dest);font-size:13px}
+.modal{position:fixed;inset:0;z-index:1000;background:rgba(10,14,20,.55);display:grid;place-items:center;
+  padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
+.sheet{background:var(--panel);color:var(--fg);border-radius:16px;padding:20px;width:min(420px,100%);display:grid;gap:12px;box-shadow:0 12px 40px rgba(0,0,0,.35);border-top:6px solid var(--matt)}
+.sheet .who{font-size:24px;font-weight:700;line-height:1.2}
+.sheet .num{font:600 20px var(--mono);color:var(--matt);text-decoration:none}
+.sheet .row button{padding:14px;font-size:16px}
+.sheet button.approve{background:var(--good)}
+.sheet button.deny{background:var(--dest);color:#fff;border:0}
+.pin{background:none;border:0;display:flex;flex-direction:column;align-items:center;cursor:pointer}
+.pin .emo{font-size:32px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,.35))}
+.pin .tag{font:600 12px var(--font);background:var(--matt);color:#fff;border-radius:6px;padding:2px 7px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+.consent{display:grid;gap:6px;padding-top:8px;border-top:1px solid var(--line)}
+.sheet.wide{width:min(560px,100%);max-height:85vh;overflow-y:auto}
+.sheet h2{margin:0;font-size:20px}
+.person{display:grid;gap:6px;padding:12px 0;border-top:1px solid var(--line)}
+.person .pname{font-weight:700;font-size:17px}
+.chip{display:inline-block;font-size:12px;font-weight:600;padding:2px 8px;border-radius:999px;margin-left:6px;vertical-align:middle;background:var(--good);color:#fff}
+.chip.off{background:var(--muted)}
+.toggle{display:flex;gap:10px;align-items:center;font-size:15px;cursor:pointer}
+.toggle input{width:22px;height:22px;accent-color:var(--matt);flex:none}
+.admin-btn{justify-self:start}
+.photo-pick{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.photo-pick label.pickbtn{display:inline-flex;align-items:center;gap:6px;padding:9px 12px;border:1px dashed var(--matt);border-radius:8px;color:var(--matt);font-weight:600;cursor:pointer}
+.photo-pick label.pickbtn:focus-within{outline:2px solid var(--matt);outline-offset:2px}
+.photo-pick input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.photo-pick img{width:56px;height:56px;object-fit:cover;border-radius:50%;border:2px solid var(--matt)}
+.sheet .ph{width:100%;max-height:260px;object-fit:cover;border-radius:12px;background:var(--bg)}
+.avatar{width:44px;height:44px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:8px;border:2px solid var(--matt)}
+.pin .face{width:46px;height:46px;border-radius:50%;object-fit:cover;border:3px solid var(--matt);background:var(--panel);box-shadow:0 2px 6px rgba(0,0,0,.35)}
+@media (prefers-reduced-motion:reduce){.arrow svg{transition:none}}
+</style>
+</head>
+<body>
+<div class="mapwrap">
+  <div id="map"></div>
+  <div class="banner" id="banner" hidden>
+    <div class="ic" id="bIcon">↑</div>
+    <div><div class="in" id="bDist">--</div><div class="tx" id="bText">--</div></div>
+  </div>
+</div>
+<div class="panel">
+  <form class="dest" id="destForm">
+    <input id="destInput" type="text" placeholder="Search a destination" autocomplete="off">
+    <button type="submit">Go</button>
+  </form>
+  <button id="findBtn" class="find" type="button">📍 Find Matt</button>
+  <div class="card" id="fmCard" hidden></div>
+  <div class="card" id="mattCard" hidden></div>
+  <div class="modal" id="adminModal" hidden role="dialog" aria-modal="true" aria-labelledby="adminTitle"></div>
+  <div class="modal" id="fmModal" hidden role="dialog" aria-modal="true" aria-labelledby="fmModalTitle"></div>
+  <div class="modes" role="group" aria-label="Travel mode">
+    <button type="button" data-mode="foot" aria-pressed="true">🚶 Walk</button>
+    <button type="button" data-mode="bike" aria-pressed="false">🚲 Bike</button>
+    <button type="button" data-mode="car" aria-pressed="false">🚗 Drive</button>
+    <button type="button" data-mode="transit" aria-pressed="false">🚇 Transit</button>
+  </div>
+  <div class="stats">
+    <div class="arrow" title="Direction to destination">
+      <svg id="arrowSvg" viewBox="0 0 24 24"><path d="M12 2l7 18-7-4-7 4z" fill="var(--accent)"/></svg>
+    </div>
+    <div class="stat"><b id="dist">--</b><span>Remaining</span></div>
+    <div class="stat"><b id="eta">--</b><span>Time</span></div>
+    <div class="stat"><b id="acc">--</b><span>GPS ±</span></div>
+  </div>
+  <div class="status" id="status">Tap Start to share your location.</div>
+  <div class="row">
+    <button id="startBtn" type="button">Start tracking</button>
+    <button id="followBtn" class="ghost" type="button">Follow: on</button>
+    <button id="clearBtn" class="ghost" type="button">Clear trail</button>
+  </div>
+  <details id="stepsBox" open>
+    <summary id="stepsSum">Directions</summary>
+    <ol class="steps" id="steps"><li><span class="i">ⓘ</span><span>Start tracking to get directions from where you are.</span><span></span></li></ol>
+  </details>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+// Default destination: CVS, 2000 Pennsylvania Ave NW, Washington DC
+let dest = { lat: 38.9002258, lng: -77.046458, name: "CVS, 2000 Pennsylvania Ave NW" };
+const SPEED = { foot: 1.35, bike: 4.5, car: 9 };          // fallback m/s for "time" when no route
+const STEP_HIT = { foot: 15, bike: 25, car: 40 };          // m from a turn to count it as passed
+const OFF_ROUTE = { foot: 40, bike: 50, car: 70 };         // m from the line before rerouting
+const ARRIVE_M = 30;
+const ROUTER = m => `https://routing.openstreetmap.de/routed-${m}/route/v1/driving/`;
+
+const $ = id => document.getElementById(id);
+const map = L.map("map", { zoomControl: false }).setView([dest.lat, dest.lng], 16);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19, attribution: "&copy; OpenStreetMap contributors · Routing: FOSSGIS/OSRM"
+}).addTo(map);
+
+const destMarker = L.marker([dest.lat, dest.lng]).addTo(map).bindPopup(dest.name);
+let me = null, accCircle = null;
+const trail = L.polyline([], { color: "#0a7cff", weight: 4, opacity: .5 }).addTo(map);
+const crow = L.polyline([], { color: "#d93a3a", weight: 2, dashArray: "6 6" }).addTo(map);
+const routeLine = L.polyline([], { color: "#0a7cff", weight: 7, opacity: .85 }).addTo(map);
+let lastAcc = 0, watchId = null, follow = true, heading = null, last = null, arrived = false, wakeLock = null;
+let mode = "foot", route = null, stepIdx = 0, offCount = 0, routing = false, lastRouteAt = 0;
+$("destInput").value = dest.name;
+
+/* ---------- geometry ---------- */
+const toRad = d => d * Math.PI / 180;
+function distance(a, b) {
+  const R = 6371000, dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
+  const h = Math.sin(dLat/2)**2 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.sin(dLng/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function bearing(a, b) {
+  const y = Math.sin(toRad(b.lng-a.lng))*Math.cos(toRad(b.lat));
+  const x = Math.cos(toRad(a.lat))*Math.sin(toRad(b.lat)) - Math.sin(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.cos(toRad(b.lng-a.lng));
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+// Distance from point p to polyline pts (array of {lat,lng}), local flat projection
+function distToLine(p, pts) {
+  const k = Math.cos(toRad(p.lat)), M = 111320;
+  const xy = q => [(q.lng - p.lng) * k * M, (q.lat - p.lat) * M];
+  let best = Infinity;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [ax, ay] = xy(pts[i]), [bx, by] = xy(pts[i+1]);
+    const dx = bx - ax, dy = by - ay, L2 = dx*dx + dy*dy;
+    const t = L2 ? Math.max(0, Math.min(1, -(ax*dx + ay*dy) / L2)) : 0;
+    best = Math.min(best, Math.hypot(ax + t*dx, ay + t*dy));
+  }
+  return best;
+}
+const fmtDist = m => m < 1000 ? Math.round(m / (m < 100 ? 5 : 10)) * (m < 100 ? 5 : 10) + " m" : (m/1000).toFixed(m < 10000 ? 2 : 1) + " km";
+const fmtTime = s => s < 60 ? "<1 min" : s < 3600 ? Math.round(s/60) + " min" : Math.floor(s/3600) + " h " + Math.round((s%3600)/60) + " min";
+function setStatus(t, cls = "") { const s = $("status"); s.textContent = t; s.className = "status " + cls; }
+function compass(b) { return ["north","northeast","east","southeast","south","southwest","west","northwest"][Math.round(b/45) % 8]; }
+
+/* ---------- turn instructions from OSRM maneuvers ---------- */
+const ICON = { left:"←", "slight left":"↖", "sharp left":"↰", right:"→", "slight right":"↗", "sharp right":"↱", straight:"↑", uturn:"↩" };
+function instruction(s) {
+  const m = s.maneuver, mod = m.modifier || "straight";
+  const road = s.name || (s.ref ? s.ref : "");
+  const onto = road ? " onto " + road : "";
+  const turn = { left:"Turn left", right:"Turn right", "slight left":"Bear left", "slight right":"Bear right",
+                 "sharp left":"Turn sharp left", "sharp right":"Turn sharp right", straight:"Continue straight", uturn:"Make a U-turn" }[mod];
+  switch (m.type) {
+    case "depart": return { icon: "↑", text: `Head ${compass(m.bearing_after)}${road ? " on " + road : ""}` };
+    case "arrive": return { icon: "📍", text: "Arrive at " + dest.name };
+    case "roundabout": case "rotary": case "exit roundabout": case "exit rotary":
+      return { icon: "⟳", text: `At the roundabout, take exit ${m.exit || 1}${onto}` };
+    case "continue": case "new name":
+      return { icon: ICON[mod] || "↑", text: (mod === "straight" ? "Continue" : turn) + (road ? " onto " + road : " " + compass(m.bearing_after)) };
+    case "fork": return { icon: ICON[mod] || "↑", text: `Keep ${mod.includes("left") ? "left" : "right"} at the fork${onto}` };
+    case "merge": return { icon: ICON[mod] || "↑", text: "Merge" + onto };
+    case "on ramp": return { icon: ICON[mod] || "↗", text: "Take the ramp" + onto };
+    case "off ramp": return { icon: ICON[mod] || "↗", text: "Take the exit" + onto };
+    case "end of road": return { icon: ICON[mod] || "↑", text: `At the end of the road, ${turn.toLowerCase()}${onto}` };
+    default: return { icon: ICON[mod] || "↑", text: turn + (road ? onto : " and head " + compass(m.bearing_after)) };
+  }
+}
+
+/* ---------- street-sign directions (all modes) ----------
+   Every step is a named street. Crosswalks, sidewalk jogs, ramps and other unnamed
+   bits are folded into the street next to them. Walking and cycling routes run on
+   sidewalks that are mapped without names, so each stretch is matched to the street
+   beside it with the routing server's "nearest road" lookup. */
+const ABBR = [[/\bStreet\b/g,"St"],[/\bAvenue\b/g,"Ave"],[/\bBoulevard\b/g,"Blvd"],[/\bRoad\b/g,"Rd"],[/\bDrive\b/g,"Dr"],
+  [/\bPlace\b/g,"Pl"],[/\bParkway\b/g,"Pkwy"],[/\bNorthwest\b/g,"NW"],[/\bNortheast\b/g,"NE"],[/\bSouthwest\b/g,"SW"],[/\bSoutheast\b/g,"SE"]];
+const cleanName = n => ABBR.reduce((s, [re, r]) => s.replace(re, r), (n || "").trim());
+const MIN_RUN_M = { foot: 45, bike: 50, car: 50 };
+const NEAREST = "https://routing.openstreetmap.de/routed-car/nearest/v1/driving/";
+
+async function getJSON(url, ms = 8000) {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms);
+  try { const r = await fetch(url, { signal: ctl.signal }); if (!r.ok) throw new Error("HTTP " + r.status); return await r.json(); }
+  finally { clearTimeout(t); }
+}
+async function pool(items, n, fn) {
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) { const k = i++; await fn(items[k], k); } }));
+}
+function measure(pts) { const cum = [0]; for (let i = 1; i < pts.length; i++) cum.push(cum[i-1] + distance(pts[i-1], pts[i])); return cum; }
+function pointAt(pts, cum, m) {
+  m = Math.max(0, Math.min(cum[cum.length - 1], m));
+  let i = 1; while (i < cum.length - 1 && cum[i] < m) i++;
+  const seg = cum[i] - cum[i-1] || 1, t = (m - cum[i-1]) / seg;
+  return { lat: pts[i-1].lat + (pts[i].lat - pts[i-1].lat) * t, lng: pts[i-1].lng + (pts[i].lng - pts[i-1].lng) * t };
+}
+// Douglas-Peucker in metres: keeps only the corners that matter
+function corners(pts, tol) {
+  const k = Math.cos(toRad(pts[0].lat)), M = 111320, xy = pts.map(p => [p.lng * k * M, p.lat * M]);
+  const keep = new Set([0, pts.length - 1]), stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop(); let best = 0, bi = -1;
+    const [ax, ay] = xy[a], [bx, by] = xy[b], dx = bx - ax, dy = by - ay, L = Math.hypot(dx, dy) || 1;
+    for (let i = a + 1; i < b; i++) { const d = Math.abs(dy * (xy[i][0] - ax) - dx * (xy[i][1] - ay)) / L; if (d > best) { best = d; bi = i; } }
+    if (best > tol) { keep.add(bi); stack.push([a, bi], [bi, b]); }
+  }
+  return [...keep].sort((x, y) => x - y);
+}
+// Name of the street running along heading b at p. First the routing server (fast, knows
+// which way the street runs); if it's busy, OpenStreetMap's address lookup (1 request a second).
+const streetCache = new Map();
+let nominatimNext = 0;
+async function nominatimRoad(p) {
+  const wait = Math.max(0, nominatimNext - Date.now()); nominatimNext = Date.now() + wait + 1100;
+  if (wait) await new Promise(r => setTimeout(r, wait));
+  const j = await getJSON(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${p.lat.toFixed(6)}&lon=${p.lng.toFixed(6)}&zoom=17&layer=address`, 8000);
+  return j.category === "highway" ? (j.address?.road || j.name || "") : (j.address?.road || "");
+}
+async function streetAt(p, b) {
+  const key = p.lat.toFixed(4) + "," + p.lng.toFixed(4) + "," + Math.round(b / 30);
+  if (streetCache.has(key)) return streetCache.get(key);
+  let name = "", serverOk = false;
+  for (const dir of [b, (b + 180) % 360]) {
+    try {
+      const r = await getJSON(`${NEAREST}${p.lng.toFixed(6)},${p.lat.toFixed(6)}?number=3&bearings=${Math.round(dir)},30`, 6000);
+      serverOk = true;
+      const w = (r.waypoints || []).find(w => w.name && w.distance <= 45);
+      if (w) { name = w.name; break; }
+    } catch (_) { break; }
+  }
+  if (!name && !serverOk) { try { name = await nominatimRoad(p); } catch (_) {} }
+  streetCache.set(key, name);
+  return name;
+}
+// Walking/cycling: cut the route into straight stretches and name each one
+async function sidewalkRuns(pts, cum) {
+  const idx = corners(pts, 12), legs = [];
+  for (let i = 0; i < idx.length - 1; i++) {
+    const a = cum[idx[i]], b = cum[idx[i + 1]], n = Math.max(1, Math.ceil((b - a) / 300));
+    for (let j = 0; j < n; j++) legs.push({ from: a + (b - a) * j / n, len: (b - a) / n, name: "" });
+  }
+  // stretches under 30 m are crossings or jogs and get folded away, so they aren't looked up
+  await pool(legs.filter(l => l.len >= 30), 2, async l => {
+    const p = pointAt(pts, cum, l.from + l.len / 2);
+    l.name = cleanName(await streetAt(p, bearing(pointAt(pts, cum, l.from), pointAt(pts, cum, l.from + l.len))));
+  });
+  return legs;
+}
+// Driving: the router already names streets
+function roadRuns(rt, total) {
+  const steps = rt.legs[0].steps.filter(s => s.maneuver.type !== "arrive");
+  const sum = steps.reduce((a, s) => a + s.distance, 0) || 1;
+  let from = 0;
+  return steps.map(s => { const l = { from, len: s.distance * total / sum, name: cleanName(s.name || s.ref) }; from += l.len; return l; });
+}
+// Fold short or unnamed stretches into the neighbouring street, merge repeats
+function foldRuns(runs) {
+  const join = rs => rs.reduce((acc, r) => { const p = acc[acc.length - 1]; if (p && p.name === r.name) p.len += r.len; else acc.push({ ...r }); return acc; }, []);
+  runs = join(runs);
+  const min = MIN_RUN_M[mode];
+  // Repeatedly hand the shortest offending stretch to a neighbour, so long streets absorb their crossings
+  for (let guard = 0; guard < 500 && runs.length > 1; guard++) {
+    let worst = -1;
+    runs.forEach((r, i) => { if ((r.len < min || (!r.name && r.len < min * 4)) && (worst < 0 || r.len < runs[worst].len)) worst = i; });
+    if (worst < 0) break;
+    const a = runs[worst - 1], b = runs[worst + 1];
+    const pick = !a ? b : !b ? a : (a.name && !b.name) ? a : (!a.name && b.name) ? b : a.len >= b.len ? a : b;
+    if (worst > 0 && pick === a) a.len += runs[worst].len;
+    else { b.from = runs[worst].from; b.len += runs[worst].len; }
+    runs.splice(worst, 1);
+    runs = join(runs);
+  }
+  return runs;
+}
+async function buildSteps(rt, pts) {
+  const cum = measure(pts), total = cum[cum.length - 1];
+  const runs = foldRuns(mode === "car" ? roadRuns(rt, total) : await sidewalkRuns(pts, cum));
+  const steps = runs.map((r, i) => {
+    const from = r.from, after = bearing(pointAt(pts, cum, from), pointAt(pts, cum, from + 30));
+    let mod;
+    if (i) {
+      const before = bearing(pointAt(pts, cum, from - 30), pointAt(pts, cum, from));
+      const d = ((after - before + 540) % 360) - 180, a = Math.abs(d), side = d > 0 ? "right" : "left";
+      mod = a < 25 ? "straight" : a < 60 ? "slight " + side : a < 140 ? side : a < 170 ? "sharp " + side : "uturn";
+    }
+    const loc = pointAt(pts, cum, from);
+    return { name: r.name, distance: r.len, duration: rt.duration * r.len / total,
+      maneuver: { type: i === 0 ? "depart" : mod === "straight" ? "new name" : "turn", modifier: mod, location: [loc.lng, loc.lat], bearing_after: after } };
+  });
+  const end = pts[pts.length - 1];
+  steps.push({ name: "", distance: 0, duration: 0, maneuver: { type: "arrive", location: [end.lng, end.lat] } });
+  return steps;
+}
+
+/* ---------- major landmarks at turns (Wikipedia) ----------
+   Only places with a Wikipedia article that people actually read (page views in
+   the last 30 days) count as landmarks, so shops and minor buildings are left out. */
+const LANDMARK_MIN_VIEWS = 1500, LANDMARK_RADIUS = 120;
+async function landmarkNear(p, avoid) {
+  const url = "https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&generator=geosearch" +
+    `&ggscoord=${p.lat.toFixed(6)}|${p.lng.toFixed(6)}&ggsradius=${LANDMARK_RADIUS}&ggslimit=20&prop=pageviews|coordinates&pvipdays=30`;
+  const pages = Object.values((await getJSON(url)).query?.pages || {});
+  const best = pages.map(pg => ({
+      name: pg.title.replace(/\s*\([^)]*\)$/, ""),
+      views: Object.values(pg.pageviews || {}).reduce((a, v) => a + (v || 0), 0) }))
+    .filter(x => x.views >= LANDMARK_MIN_VIEWS && !avoid.has(x.name) &&
+      !/\b(Street|Avenue|Road|Boulevard|Parkway|Highway|Interstate|Historic District|neighborhood)\b|^(Foggy Bottom|Downtown|Northwest|Washington, D\.C\.)/i.test(x.name) &&
+      !/\b(assassination|shooting|attack|bombing|riot|protest|murder|killing|death of|crash|fire|incident|massacre|siege|of \d{4}|\d{4} )/i.test(x.name))
+    .sort((a, b) => b.views - a.views)[0];
+  return best ? best.name : "";
+}
+async function addLandmarks(rt) {
+  const turns = rt.steps.filter(s => s.type !== "depart" && s.type !== "arrive");
+  const used = new Set();
+  const found = [];
+  await pool(turns, 3, async (s, i) => { try { found[i] = await landmarkNear(s.loc, used); } catch (_) {} });
+  if (route !== rt) return;                                   // route changed while we waited
+  turns.forEach((s, i) => { const n = found[i]; if (n && !used.has(n)) { s.text += " at " + n; used.add(n); } });
+  renderSteps(); update();
+}
+
+/* ---------- routing ---------- */
+async function fetchRoute() {
+  if (!last || mode === "transit" || routing) return;
+  routing = true; lastRouteAt = Date.now();
+  setStatus("Getting " + { foot:"walking", bike:"cycling", car:"driving" }[mode] + " directions…");
+  try {
+    const url = ROUTER(mode) + `${last.lng},${last.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson&steps=true`;
+    const r = await (await fetch(url)).json();
+    if (r.code !== "Ok" || !r.routes.length) throw new Error(r.message || "No route found");
+    const rt = r.routes[0];
+    const pts = rt.geometry.coordinates.map(c => ({ lat: c[1], lng: c[0] }));
+    routeLine.setLatLngs(pts.map(p => [p.lat, p.lng]));
+    if (mode !== "car") setStatus("Matching streets…");
+    const rawSteps = await buildSteps(rt, pts);
+    const steps = rawSteps.map(s => ({ ...instruction(s), dist: s.distance, dur: s.duration,
+      type: s.maneuver.type, road: s.name || "",
+      loc: { lat: s.maneuver.location[1], lng: s.maneuver.location[0] } }));
+    route = { pts, steps, dist: rt.distance, dur: rt.duration };
+    stepIdx = 0; offCount = 0;
+    routeLine.setLatLngs(route.pts.map(p => [p.lat, p.lng]));
+    crow.setLatLngs([]);
+    renderSteps();
+    setStatus(`Route ready · ${fmtDist(rt.distance)} · ${fmtTime(rt.duration)}`, "ok");
+    update();
+    addLandmarks(route);
+  } catch (e) {
+    route = null; routeLine.setLatLngs([]); $("banner").hidden = true;
+    setStatus("Couldn't get directions (" + e.message + "). Showing straight-line guidance.", "err");
+    renderSteps();
+  } finally { routing = false; }
+}
+
+function renderSteps() {
+  const ol = $("steps"); ol.innerHTML = "";
+  if (mode === "transit") return renderTransit();
+  if (!route) {
+    ol.innerHTML = `<li><span class="i">ⓘ</span><span>${last ? "No route available." : "Start tracking to get directions from where you are."}</span><span></span></li>`;
+    $("stepsSum").textContent = "Directions"; return;
+  }
+  // Finished directions drop off; the one you're on now sits on top, labelled Current,
+  // with the distance left on it counting down.
+  const left = route.steps.length - stepIdx;
+  $("stepsSum").textContent = `Directions · ${left} ${left === 1 ? "step" : "steps"} left`;
+  route.steps.forEach((s, i) => {
+    if (i < stepIdx) return;
+    const li = document.createElement("li");
+    const ic = document.createElement("span"); ic.className = "i"; ic.textContent = s.icon;
+    const tx = document.createElement("span");
+    const d = document.createElement("span"); d.className = "d";
+    if (i === stepIdx) {
+      li.className = "cur"; li.setAttribute("aria-current", "step");
+      const now = document.createElement("span"); now.className = "now"; now.textContent = "Current";
+      tx.append(now, s.text);
+      const rest = s.type === "arrive" ? 0 : route.toNext ?? s.dist;
+      d.textContent = rest ? fmtDist(rest) + " left" : "";
+    } else {
+      tx.textContent = s.text;
+      d.textContent = s.dist ? fmtDist(s.dist) : "";
+    }
+    li.append(ic, tx, d); ol.append(li);
+  });
+}
+
+function renderTransit() {
+  $("stepsSum").textContent = "Transit directions";
+  const origin = last ? `${last.lat},${last.lng}` : "";
+  const g = `https://www.google.com/maps/dir/?api=1${origin ? "&origin=" + origin : ""}&destination=${dest.lat},${dest.lng}&travelmode=transit`;
+  const a = `https://maps.apple.com/?${origin ? "saddr=" + origin + "&" : ""}daddr=${dest.lat},${dest.lng}&dirflg=r`;
+  $("steps").innerHTML = `<li style="display:block;padding:0"><div class="transit">
+    <span>Live bus and rail schedules aren't available from free map services, so transit opens in your maps app.</span>
+    <a href="${g}" target="_blank" rel="noopener">Open transit route in Google Maps</a>
+    <a href="${a}" target="_blank" rel="noopener">Open transit route in Apple Maps</a></div></li>`;
+}
+
+/* ---------- live updates ---------- */
+function update() {
+  if (!last) return;
+  const direct = distance(last, dest);
+  const b = bearing(last, dest);
+  $("arrowSvg").style.transform = `rotate(${heading != null ? b - heading : b}deg)`;
+
+  if (route && mode !== "transit") {
+    const steps = route.steps;
+    // advance past any upcoming turn we've reached
+    while (stepIdx < steps.length - 1 && distance(last, steps[stepIdx + 1].loc) < STEP_HIT[mode]) stepIdx++;
+    const next = steps[Math.min(stepIdx + 1, steps.length - 1)];
+    const toNext = distance(last, next.loc);
+    route.toNext = stepIdx < steps.length - 1 ? toNext : 0;
+    let remaining = toNext; for (let i = stepIdx + 2; i < steps.length; i++) remaining += steps[i - 1].dist;
+    const remainingDur = route.dist ? route.dur * (remaining / route.dist) : remaining / SPEED[mode];
+    $("dist").textContent = fmtDist(remaining);
+    $("eta").textContent = fmtTime(remainingDur);
+    $("banner").hidden = false;
+    $("bIcon").textContent = next.icon; $("bDist").textContent = fmtDist(toNext); $("bText").textContent = next.text;
+    renderSteps();
+    // off-route check
+    if (distToLine(last, route.pts) > OFF_ROUTE[mode]) {
+      if (++offCount >= 3 && Date.now() - lastRouteAt > 10000) { setStatus("Off route. Rerouting…"); fetchRoute(); }
+    } else offCount = 0;
+  } else {
+    $("dist").textContent = fmtDist(direct);
+    $("eta").textContent = mode === "transit" ? "--" : fmtTime(direct / SPEED[mode]);
+    $("banner").hidden = true;
+    crow.setLatLngs([[last.lat, last.lng], [dest.lat, dest.lng]]);
+  }
+
+  if (direct <= ARRIVE_M && !arrived) {
+    arrived = true; setStatus(dest.person ? "You found " + dest.name + "!" : "You've arrived at " + dest.name + ".", "ok");
+    $("bIcon").textContent = "📍"; $("bDist").textContent = "Arrived"; $("bText").textContent = dest.name;
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  } else if (direct > ARRIVE_M * 2) arrived = false;
+}
+
+function onPos(p) {
+  const { latitude: lat, longitude: lng, accuracy, heading: h, speed } = p.coords;
+  const first = !last;
+  last = { lat, lng }; locDenied = false;
+  if (h != null && !isNaN(h) && speed > 0.5) heading = h;
+  if (!me) {
+    me = L.circleMarker([lat, lng], { radius: 8, color: "#fff", weight: 3, fillColor: "#0a7cff", fillOpacity: 1 }).addTo(map);
+    accCircle = L.circle([lat, lng], { radius: accuracy, color: "#0a7cff", weight: 1, fillOpacity: .1 }).addTo(map);
+    map.fitBounds([[lat, lng], [dest.lat, dest.lng]], { padding: [60, 40] });
+  } else {
+    me.setLatLng([lat, lng]); accCircle.setLatLng([lat, lng]).setRadius(accuracy);
+    if (follow) map.panTo([lat, lng]);
+  }
+  trail.addLatLng([lat, lng]);
+  $("acc").textContent = Math.round(accuracy) + " m";
+  lastAcc = accuracy;
+  shareBack();
+  if (first) { mode === "transit" ? renderSteps() : fetchRoute(); }
+  else if (!arrived && !routing && route) setStatus("Tracking live · updated " + new Date().toLocaleTimeString(), "ok");
+  update();
+}
+let locDenied = false;
+function onErr(e) {
+  if (e.code === 1) locDenied = true;
+  const msg = { 1: "Location permission denied. Allow it in your browser settings.",
+                2: "Location unavailable. Try moving to open sky.",
+                3: "Location timed out. Still trying…" }[e.code] || e.message;
+  setStatus(msg, "err");
+}
+
+async function start() {
+  if (!("geolocation" in navigator)) return setStatus("This browser doesn't support location.", "err");
+  if (!window.isSecureContext) return setStatus("Location needs HTTPS. Host this page on an https:// site.", "err");
+  watchId = navigator.geolocation.watchPosition(onPos, onErr, { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 });
+  $("startBtn").textContent = "Stop tracking";
+  setStatus("Finding you…");
+  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) {}
+  try {
+    if (typeof DeviceOrientationEvent !== "undefined" && DeviceOrientationEvent.requestPermission)
+      await DeviceOrientationEvent.requestPermission();
+    addEventListener("deviceorientationabsolute", onOrient, true);
+    addEventListener("deviceorientation", onOrient, true);
+  } catch (_) {}
+}
+function onOrient(e) {
+  const h = e.webkitCompassHeading ?? (e.absolute && e.alpha != null ? 360 - e.alpha : null);
+  if (h != null) { heading = h; if (last) $("arrowSvg").style.transform = `rotate(${bearing(last, dest) - h}deg)`; }
+}
+function stop() {
+  navigator.geolocation.clearWatch(watchId); watchId = null;
+  $("startBtn").textContent = "Start tracking"; setStatus("Tracking stopped.");
+  try { wakeLock?.release(); } catch (_) {} wakeLock = null;
+}
+
+$("startBtn").onclick = () => watchId == null ? start() : stop();
+$("followBtn").onclick = () => { follow = !follow; $("followBtn").textContent = "Follow: " + (follow ? "on" : "off"); };
+$("clearBtn").onclick = () => trail.setLatLngs([]);
+document.querySelectorAll(".modes button").forEach(b => b.onclick = () => {
+  mode = b.dataset.mode;
+  document.querySelectorAll(".modes button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  route = null; routeLine.setLatLngs([]); $("banner").hidden = true;
+  if (mode === "transit") { renderSteps(); update(); } else if (last) fetchRoute(); else renderSteps();
+});
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "visible" && watchId != null && !wakeLock)
+    try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) {}
+});
+
+// Destination search (OpenStreetMap Nominatim)
+$("destForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const q = $("destInput").value.trim(); if (!q) return;
+  if (fm && q !== "Matt") cancelFind(true);
+  setStatus("Searching…");
+  try {
+    let url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(q);
+    if (last) url += `&viewbox=${last.lng-0.1},${last.lat+0.1},${last.lng+0.1},${last.lat-0.1}`;
+    const r = await (await fetch(url, { headers: { "Accept": "application/json" } })).json();
+    if (!r.length) return setStatus("No match for “" + q + "”. Try adding a city.", "err");
+    dest = { lat: +r[0].lat, lng: +r[0].lon, name: r[0].display_name.split(",").slice(0, 2).join(",") };
+    destMarker.setLatLng([dest.lat, dest.lng]).bindPopup(dest.name).setOpacity(1);
+    if (typeof guiding !== "undefined") guiding = null;
+    arrived = false; route = null; routeLine.setLatLngs([]);
+    map.fitBounds(last ? [[last.lat, last.lng], [dest.lat, dest.lng]] : [[dest.lat, dest.lng], [dest.lat, dest.lng]], { padding: [60, 40], maxZoom: 16 });
+    setStatus("Destination set: " + dest.name, "ok");
+    if (mode === "transit") renderSteps(); else if (last) fetchRoute();
+    update();
+  } catch (_) { setStatus("Search failed. Check your connection.", "err"); }
+});
+
+/* ---------- Find Matt ----------
+   Requests and replies travel through ntfy.sh, a free message relay. Matt's replies are
+   signed with a key that only his phone holds, and his location is encrypted so only the
+   person who asked can read it. Nothing is shared until Matt taps Approve. */
+const FM = {
+  topic: "findmatt-GCLyM2W72hu3EVgAkNDO",
+  mattPub: "BCgsRjXqyHK_OBbrWTZ5EzeVASEzeBuafgXqf5_itZVQofyTupvdVaQMZLpakBvbfr6uDDaz0Qs7XviWt_ykcXc",
+  shareMin: 30,          // how long one approval shares Matt's location
+  answerMin: 10,         // how long a request waits for Matt
+  relay: "https://ntfy.sh/"
+};
+const b64u = {
+  enc: buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+  dec: s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), c => c.charCodeAt(0))
+};
+const te = new TextEncoder(), td = new TextDecoder();
+const ECDH = { name: "ECDH", namedCurve: "P-256" }, ECDSA = { name: "ECDSA", namedCurve: "P-256" }, SIG = { name: "ECDSA", hash: "SHA-256" };
+const store = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (_) {} };
+const load = k => { try { return localStorage.getItem(k); } catch (_) { return null; } };
+const ago = t => { const s = Math.round((Date.now() - t) / 1000); return s < 10 ? "just now" : s < 60 ? s + " s ago" : Math.round(s / 60) + " min ago"; };
+function el(tag, props = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) k === "class" ? e.className = v : k.startsWith("on") ? e[k] = v : e.setAttribute(k, v);
+  for (const k of kids) if (k != null) e.append(k);
+  return e;
+}
+async function relayPost(topic, obj) {
+  const r = await fetch(FM.relay + topic, { method: "POST", body: JSON.stringify(obj) });
+  if (!r.ok) throw new Error("relay " + r.status);
+}
+function relayListen(topic, onMsg, since) {
+  const es = new EventSource(FM.relay + topic + "/sse" + (since ? "?since=" + since : ""));
+  es.onmessage = e => { try { onMsg(JSON.parse(e.data)); } catch (_) {} };
+  return es;
+}
+async function aesKey(myPriv, theirPubB64, keepable = false) {
+  const theirs = await crypto.subtle.importKey("raw", b64u.dec(theirPubB64), ECDH, false, []);
+  return crypto.subtle.deriveKey({ name: "ECDH", public: theirs }, myPriv, { name: "AES-GCM", length: 256 }, keepable, ["encrypt", "decrypt"]);
+}
+async function seal(key, obj) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  return { t: "enc", iv: b64u.enc(iv), ct: b64u.enc(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, te.encode(JSON.stringify(obj)))) };
+}
+async function unseal(key, m) {
+  return JSON.parse(td.decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64u.dec(m.iv) }, key, b64u.dec(m.ct))));
+}
+let mattVerifyKey = null;
+async function verifyMatt(text, sig) {
+  mattVerifyKey ??= await crypto.subtle.importKey("raw", b64u.dec(FM.mattPub), ECDSA, false, ["verify"]);
+  try { return await crypto.subtle.verify(SIG, mattVerifyKey, b64u.dec(sig), te.encode(text)); } catch (_) { return false; }
+}
+
+/* ----- photos: shrunk on the phone, encrypted, then sent through the relay (it keeps files about 3 hours) ----- */
+async function shrinkImage(blob, max, quality) {
+  const img = await createImageBitmap(blob);
+  const k = Math.min(1, max / Math.max(img.width, img.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  return await new Promise((ok, bad) => c.toBlob(b => b ? ok(b) : bad(new Error("photo")), "image/jpeg", quality));
+}
+async function blobToDataURL(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = ""; for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return `data:${blob.type || "image/jpeg"};base64,${btoa(bin)}`;
+}
+async function uploadPhoto(key, blob, topic) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, await blob.arrayBuffer());
+  const r = await fetch(FM.relay + topic, { method: "PUT", body: ct, headers: { Filename: "photo.bin" } });
+  const j = await r.json();
+  if (!r.ok || !j.attachment?.url) throw new Error("upload");
+  return { url: j.attachment.url, iv: b64u.enc(iv) };
+}
+async function downloadPhoto(key, ref) {
+  if (!/^https:\/\/ntfy\.sh\/file\/[\w.-]+$/.test(ref?.url || "")) throw new Error("bad photo link");
+  const r = await fetch(ref.url); if (!r.ok) throw new Error("photo " + r.status);
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64u.dec(ref.iv) }, key, await r.arrayBuffer());
+  return new Blob([plain], { type: "image/jpeg" });
+}
+let pickedPhoto = null;   // { blob, url } chosen in the request form
+function dataURLtoBlob(u) {
+  const [head, b64] = u.split(","); const bin = atob(b64), a = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+  return new Blob([a], { type: (head.match(/data:([^;]+)/) || [])[1] || "image/jpeg" });
+}
+let mattPhoto = load("fmMattPhoto");          // Matt's photo (on Matt's phone only)
+let mattPin = null;                           // Matt's photo pin on a requester's map
+function showMattPin(p) {
+  if (!fm?.mattFace || !p) return;
+  if (!mattPin) {
+    const html = el("div", { class: "pin", title: "Matt" }, el("img", { class: "face", src: fm.mattFace, alt: "" }), el("span", { class: "tag" }, "Matt"));
+    mattPin = L.marker([p.lat, p.lng], { icon: L.divIcon({ className: "", html, iconSize: [52, 68], iconAnchor: [26, 46] }), title: "Matt", zIndexOffset: 1000 }).addTo(map);
+  } else mattPin.setLatLng([p.lat, p.lng]);
+  destMarker.setOpacity(0);
+}
+function dropMattPin() { if (mattPin) { map.removeLayer(mattPin); mattPin = null; } destMarker.setOpacity(1); }
+
+/* ----- someone looking for Matt ----- */
+// Each browser gets its own private ID key, kept on that device. Matt's admin list uses it
+// to recognise the same person again; a name or number can be typed by anyone, this can't be copied.
+let myDev = null;
+async function myDevice() {
+  if (myDev) return myDev;
+  let jwk = null; try { jwk = JSON.parse(load("fmDevice") || "null"); } catch (_) {}
+  if (!jwk) { const kp = await crypto.subtle.generateKey(ECDSA, true, ["sign", "verify"]); jwk = await crypto.subtle.exportKey("jwk", kp.privateKey); store("fmDevice", JSON.stringify(jwk)); }
+  const priv = await crypto.subtle.importKey("jwk", { ...jwk, key_ops: ["sign"] }, ECDSA, false, ["sign"]);
+  const pubKey = await crypto.subtle.importKey("jwk", { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y, ext: true }, ECDSA, true, ["verify"]);
+  return myDev = { priv, pub: b64u.enc(await crypto.subtle.exportKey("raw", pubKey)) };
+}
+let fm = null;   // { id, name, kp, es, key, state, loc, locAt, routedTo, timer }
+function fmSet(state) { if (fm) fm.state = state; renderFind(); }
+function renderFind() {
+  const card = $("fmCard");
+  if (!fm) { card.hidden = true; card.replaceChildren(); return; }
+  card.hidden = false;
+  const close = el("button", { type: "button", class: "ghost", onclick: () => cancelFind(true) }, fm.state === "sharing" || fm.state === "approved" ? "Stop finding Matt" : fm.state === "waiting" ? "Cancel request" : "Close");
+  const rows = {
+    form: () => {
+      const input = el("input", { id: "fmName", type: "text", placeholder: "Your name", autocomplete: "name", maxlength: "40", "aria-label": "Your name" });
+      const phoneIn = el("input", { id: "fmPhone", type: "tel", placeholder: "Your phone number", autocomplete: "tel", inputmode: "tel", maxlength: "20", "aria-label": "Your phone number" });
+      const hint = el("span", { class: "hint", hidden: "" });
+      input.value = load("fmName") || ""; phoneIn.value = load("fmPhone") || "";
+      const fileIn = el("input", { id: "fmPhoto", type: "file", accept: "image/*" });
+      const pickLabel = el("label", { class: "pickbtn", for: "fmPhoto" }, "📷 ", el("span", {}, pickedPhoto ? "Change photo" : "Add a photo (optional)"), fileIn);
+      const thumb = el("img", { alt: "Your photo" }); thumb.hidden = !pickedPhoto; if (pickedPhoto) thumb.src = pickedPhoto.url;
+      const removeBtn = el("button", { type: "button", class: "ghost", onclick: () => { pickedPhoto = null; renderFind(); } }, "Remove");
+      removeBtn.hidden = !pickedPhoto;
+      fileIn.onchange = async () => {
+        const f = fileIn.files?.[0]; if (!f) return;
+        hint.hidden = true;
+        try {
+          const blob = await shrinkImage(f, 900, 0.82);
+          pickedPhoto = { blob, url: URL.createObjectURL(blob) };
+          thumb.src = pickedPhoto.url; thumb.hidden = false; removeBtn.hidden = false;
+          pickLabel.querySelector?.("span") && (pickLabel.querySelector("span").textContent = "Change photo");
+        } catch (_) { hint.textContent = "That photo couldn't be read. Try a different one."; hint.hidden = false; }
+      };
+      const photoRow = el("div", { class: "photo-pick" }, thumb, pickLabel, removeBtn);
+      const form = el("form", { class: "fmform", onsubmit: e => {
+          e.preventDefault();
+          const n = input.value.trim(), ph = phoneIn.value.trim(), digits = ph.replace(/\D/g, "");
+          if (!n) { hint.textContent = "Enter your name."; hint.hidden = false; return input.focus(); }
+          if (digits.length < 10) { hint.textContent = "Enter your phone number, including area code."; hint.hidden = false; return phoneIn.focus(); }
+          store("fmName", n); store("fmPhone", ph); findMatt(n, ph, pickedPhoto?.blob);
+        } },
+        input, phoneIn, photoRow, hint, el("button", { type: "submit" }, "Ask Matt"));
+      setTimeout(() => (input.value ? phoneIn : input).focus(), 0);
+      return [el("b", {}, "Find Matt"), el("span", { class: "muted" }, "Matt gets a request on his phone with your name, number and photo if you add one. If he approves, you'll see where he is and get directions to him for " + FM.shareMin + " minutes. You'll also be asked whether Matt can see where you are."), form,
+              el("button", { type: "button", class: "ghost", onclick: () => cancelFind(true) }, "Cancel")];
+    },
+    sending: () => [el("b", {}, fm.photoNote || "Sending your request…")],
+    waiting: () => [el("b", {}, "Waiting for Matt to approve…"), el("span", { class: "muted" }, "Keep this page open. The request expires in " + FM.answerMin + " minutes."), close],
+    approved: () => [el("b", {}, "Matt approved"), el("span", { class: "muted" }, "Waiting for his first location…"), close],
+    sharing: () => [el("b", {}, fm.mattFace ? el("img", { class: "avatar", src: fm.mattFace, alt: "" }) : null, "Matt is sharing his location"),
+      el("span", { class: "muted" }, `Updated ${ago(fm.locAt)} · directions below lead to him and update as he moves.` + (fm.until ? ` Sharing ends in ${Math.max(0, Math.ceil((fm.until - Date.now()) / 60000))} min.` : "")), close],
+    denied: () => [el("b", {}, "Matt declined the request."), close],
+    ended: () => [el("b", {}, "Matt stopped sharing his location."), el("span", { class: "muted" }, fm.loc ? "The map shows the last place he was seen." : ""), close],
+    timeout: () => [el("b", {}, "Matt didn't answer."), el("span", { class: "muted" }, "His phone may be locked or the app closed. Try again later."), close],
+    error: () => [el("b", {}, "Couldn't reach the message service."), el("span", { class: "muted" }, "Check your connection and try again."), close]
+  };
+  const kids = rows[fm.state]();
+  if (fm.state === "approved" || fm.state === "sharing") kids.splice(kids.length - 1, 0, consentBlock());
+  card.replaceChildren(...kids);
+}
+// Asked once Matt approves: may Matt see where you are?
+function consentBlock() {
+  if (fm.shareMine === undefined) return el("div", { class: "consent" },
+    el("b", {}, "Do you want Matt to find you too?"),
+    el("span", { class: "muted" }, "If you say yes, Matt sees where you are on his map and can get directions to you. You can stop at any time."),
+    el("div", { class: "row" },
+      el("button", { type: "button", onclick: () => setShareMine(true) }, "Yes, share my location"),
+      el("button", { type: "button", class: "ghost", onclick: () => setShareMine(false) }, "No")));
+  return el("div", { class: "consent" },
+    el("span", { class: "muted" }, fm.shareMine ? "Matt can see where you are." : "Matt can't see where you are."),
+    fm.shareMine
+      ? el("button", { type: "button", class: "ghost", onclick: () => setShareMine(false) }, "Stop sharing my location")
+      : el("button", { type: "button", class: "ghost", onclick: () => setShareMine(true) }, "Share my location with Matt"));
+}
+async function setShareMine(yes) {
+  if (!fm?.key) return;
+  fm.shareMine = yes; renderFind();
+  if (yes) { if (watchId == null) start(); shareBack(true); }
+  else try { await relayPost(`${FM.topic}-${fm.id}`, await seal(fm.key, { t: yes ? "fyes" : "fno" })); } catch (_) {}
+}
+function cancelFind(tellMatt) {
+  if (!fm) return;
+  if (tellMatt && (fm.state === "waiting" || fm.state === "approved" || fm.state === "sharing"))
+    relayPost(`${FM.topic}-${fm.id}`, { t: "cancel" }).catch(() => {});
+  fm.es?.close(); clearTimeout(fm.timer);
+  if (dest.person) dest.name = "Matt's last location";
+  dropMattPin();
+  fm = null; renderFind();
+}
+async function findMatt(name, phone, photo) {
+  cancelFind(false);
+  fm = { name, state: "sending", id: b64u.enc(crypto.getRandomValues(new Uint8Array(12))) };
+  renderFind();
+  try {
+    fm.kp = await crypto.subtle.generateKey(ECDH, false, ["deriveKey"]);
+    const pub = b64u.enc(await crypto.subtle.exportKey("raw", fm.kp.publicKey));
+    const me_ = fm;
+    fm.es = relayListen(`${FM.topic}-${fm.id}`, m => { if (fm === me_ && m.event === "message") onMattReply(m.message); });
+    await new Promise(r => { fm.es.onopen = r; setTimeout(r, 5000); });
+    // Name and number are encrypted so only Matt's phone can read them
+    const dev = await myDevice();
+    const dsig = b64u.enc(await crypto.subtle.sign(SIG, dev.priv, te.encode(`${fm.id}.${pub}`)));
+    const toMatt = await aesKey(fm.kp.privateKey, FM.mattPub);
+    let photoRef = null;
+    if (photo) {
+      fm.photoNote = "Sending your photo…"; renderFind();
+      try { photoRef = await uploadPhoto(toMatt, photo, `${FM.topic}-${fm.id}-p`); } catch (_) { photoRef = null; }   // send without it rather than fail
+      fm.photoNote = photoRef ? "Sending your request…" : "Photo didn't send. Sending your request without it…"; renderFind();
+    }
+    const who = await seal(toMatt, { name, phone, dev: dev.pub, dsig, photo: photoRef });
+    const link = location.origin + location.pathname + "#req=" + b64u.enc(te.encode(JSON.stringify({ id: fm.id, at: Date.now(), pub, iv: who.iv, ct: who.ct })));
+    const r = await fetch(FM.relay, { method: "POST", body: JSON.stringify({
+      topic: FM.topic, title: "Find Matt request", message: `${name} wants to find you. Tap to accept or deny.`,
+      click: link, tags: ["round_pushpin"], priority: 5,
+      actions: [
+        { action: "view", label: "Accept", url: link + ".accept", clear: true },
+        { action: "http", label: "Deny", url: `${FM.relay}${FM.topic}-${fm.id}`, method: "POST", body: JSON.stringify({ t: "deny" }), clear: true },
+        { action: "view", label: "Review", url: link, clear: true }] }) });
+    if (!r.ok) throw new Error("relay " + r.status);
+    fmSet("waiting");
+    pickedPhoto = null;
+    fm.timer = setTimeout(() => {
+      if (fm?.state !== "waiting") return;
+      relayPost(`${FM.topic}-${fm.id}`, { t: "cancel" }).catch(() => {});
+      fm.es?.close(); fmSet("timeout");
+    }, FM.answerMin * 60000);
+  } catch (_) { fm?.es?.close(); fmSet("error"); }
+}
+async function onMattReply(raw) {
+  let m; try { m = JSON.parse(raw); } catch (_) { return; }
+  if (!fm) return;
+  if (m.t === "deny" && fm.state === "waiting") { clearTimeout(fm.timer); fm.es.close(); return fmSet("denied"); }
+  if (m.t === "ok" && fm.state === "waiting" && await verifyMatt(`${fm.id}.${m.epk}.${m.until}`, m.sig)) {
+    clearTimeout(fm.timer);
+    fm.key = await aesKey(fm.kp.privateKey, m.epk); fm.until = m.until;
+    if (navigator.vibrate) navigator.vibrate(150);
+    fmSet("approved");
+    if (watchId == null) start();          // their own position, for directions to Matt
+    return;
+  }
+  if (m.t === "enc" && fm.key) {
+    let p; try { p = await unseal(fm.key, m); } catch (_) { return; }      // not from Matt: ignore
+    if (p.t === "end") { fm.es.close(); return fmSet("ended"); }
+    if (p.t === "mphoto") {
+      const me_ = fm;
+      try { const b = await downloadPhoto(fm.key, p); if (fm !== me_) return; fm.mattFace = URL.createObjectURL(b); } catch (_) { return; }
+      if (fm.loc) showMattPin(fm.loc);
+      return renderFind();
+    }
+    if (p.t === "loc") onMattLocation(p);
+  }
+}
+// Make a moving person the destination. `track` remembers where we last routed to.
+function followPerson(name, p, track, emojiPin) {
+  dest = { lat: p.lat, lng: p.lng, name, person: true };
+  destMarker.setLatLng([p.lat, p.lng]).bindPopup(name + " · ±" + Math.round(p.acc || 0) + " m").setOpacity(emojiPin ? 0 : 1);
+  $("destInput").value = name;
+  if (watchId == null) start();
+  if (!track.fitted) { track.fitted = true; map.fitBounds(last ? [[last.lat, last.lng], [p.lat, p.lng]] : [[p.lat, p.lng], [p.lat, p.lng]], { padding: [60, 40], maxZoom: 17 }); }
+  // Re-plan the route straight away the first time, then when they've moved a fair way (at most every 20 s)
+  const moved = !track.routedTo || distance(track.routedTo, p) > 40;
+  if (last && mode !== "transit" && moved && (!track.routedTo || Date.now() - lastRouteAt > 20000)) {
+    track.routedTo = { lat: p.lat, lng: p.lng }; arrived = false; route = null; fetchRoute();
+  } else { if (mode === "transit") renderSteps(); update(); }
+}
+function onMattLocation(p) {
+  fm.loc = p; fm.locAt = Date.now();
+  fmSet("sharing");
+  followPerson("Matt", p, fm.track ??= {}, !!fm.mattFace);
+  showMattPin(p);
+}
+// The person looking for Matt sends their own location back, so Matt can come to them too.
+// Same limits as Matt's side: at most every 15 s, only after moving 10 m or every 90 s.
+async function shareBack(force) {
+  if (!fm?.key || !last || fm.shareMine !== true || !["approved", "sharing"].includes(fm.state)) return;
+  const now = Date.now();
+  if (!force && (now - (fm.backAt || 0) < 15000 || (fm.backPos && distance(fm.backPos, last) < 10 && now - fm.backAt < 90000))) return;
+  fm.backAt = now; fm.backPos = { ...last };
+  try { await relayPost(`${FM.topic}-${fm.id}`, await seal(fm.key, { t: "floc", lat: last.lat, lng: last.lng, acc: lastAcc, ts: now })); }
+  catch (_) { fm.backAt = 0; }
+}
+
+/* ----- Matt's own phone ----- */
+const PIN_EMOJI = ["🙋", "🧑", "😎", "🧢", "🐻", "🦊"];
+let pinCount = 0;
+function placePin(s) {
+  const at = [s.friend.lat, s.friend.lng];
+  if (s.pin) return s.pin.setLatLng(at);
+  s.emoji ??= PIN_EMOJI[pinCount++ % PIN_EMOJI.length];
+  const face = s.thumb ? el("img", { class: "face", src: s.thumb, alt: "" }) : el("span", { class: "emo" }, s.emoji);
+  const html = el("div", { class: "pin", title: `Directions to ${s.name}` }, face, el("span", { class: "tag" }, s.name));
+  s.pin = L.marker(at, { icon: L.divIcon({ className: "", html, iconSize: [52, 68], iconAnchor: [26, 46] }), keyboard: true, title: `Directions to ${s.name}`, zIndexOffset: 1000 })
+    .addTo(map).on("click", () => goTo(s.id));
+}
+function dropPin(s) { if (s.pin) { map.removeLayer(s.pin); s.pin = null; } }
+function goTo(id) {
+  const s = shares.get(id); if (!s?.friend) return;
+  guiding = id; s.track = {};
+  followPerson(s.name, s.friend, s.track, true);
+  saveShares();
+  renderMatt();
+  checkMyLocation();
+}
+function stopGuiding(s) {
+  guiding = null; destMarker.setOpacity(1); store("fmGuiding", null);
+  if (dest.person) dest.name = s.name + "'s last location";
+}
+let guiding = null, mattDh = null, mattKey = null, mattWatch = null, mattPos = null, mattWake = null, mattEs = null;
+const pending = new Map(), shares = new Map();
+const handled = new Set(JSON.parse(load("fmHandled") || "[]"));
+function markHandled(id) { handled.add(id); store("fmHandled", JSON.stringify([...handled].slice(-50))); }
+const fmtPhone = p => { const d = String(p || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+  return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : String(p || "").slice(0, 20); };
+// Everyone Matt has accepted, kept on Matt's phone: { [device id]: { name, phone, access, auto, firstAt, lastAt, count, blockedAt } }
+let people = {};
+try { people = JSON.parse(load("fmPeople") || "{}"); } catch (_) {}
+const savePeople = () => store("fmPeople", JSON.stringify(people));
+async function checkDevice(req, who) {
+  if (!who.dev || !who.dsig) return null;
+  try {
+    const k = await crypto.subtle.importKey("raw", b64u.dec(who.dev), ECDSA, false, ["verify"]);
+    return await crypto.subtle.verify(SIG, k, b64u.dec(who.dsig), te.encode(`${req.id}.${req.pub}`)) ? who.dev : null;
+  } catch (_) { return null; }
+}
+async function addRequest(req) {
+  if (!req?.id || !req.pub || !req.ct) return "bad";
+  if (pending.has(req.id)) return "ok";
+  let who; try { who = await unseal(await aesKey(mattDh, req.pub), req); } catch (_) { return "bad"; }   // not readable: not a real request
+  req.name = String(who.name || "Someone").slice(0, 40);
+  req.phone = String(who.phone || "").slice(0, 20);
+  req.dev = await checkDevice(req, who);
+  if (who.photo) {
+    req.photoState = "loading";
+    aesKey(mattDh, req.pub).then(k => downloadPhoto(k, who.photo)).then(async b => {
+      req.photoUrl = URL.createObjectURL(b);
+      req.thumb = await blobToDataURL(await shrinkImage(b, 160, 0.7));
+      req.photoState = "ok";
+      const s = shares.get(req.id);
+      if (s) { s.thumb = req.thumb; if (s.pin) { dropPin(s); placePin(s); } }
+      if (req.dev && people[req.dev] && shares.has(req.id)) { people[req.dev].photo = req.thumb; savePeople(); }
+    }).catch(() => { req.photoState = "failed"; }).finally(() => { renderMatt(); renderAdmin(); });
+  }
+  const person = req.dev && people[req.dev];
+  if (person && !person.access) {                       // access turned off: answer no without bothering Matt
+    if (!handled.has(req.id)) {
+      person.blockedAt = Date.now(); savePeople(); markHandled(req.id);
+      try { await relayPost(`${FM.topic}-${req.id}`, { t: "deny", sig: b64u.enc(await crypto.subtle.sign(SIG, mattKey, te.encode(`${req.id}.deny`))) }); } catch (_) {}
+      renderAdmin();
+    }
+    return "blocked";
+  }
+  if (handled.has(req.id) || shares.has(req.id)) return "answered";
+  if (req.at && Date.now() - req.at > FM.answerMin * 60000) { markHandled(req.id); return "answered"; }
+  req.es = relayListen(`${FM.topic}-${req.id}`, async m => {
+    let r; try { r = JSON.parse(m.message); } catch (_) { return; }
+    if (m.event !== "message" || !pending.has(req.id)) return;
+    const done = r.t === "deny" || r.t === "cancel" || (r.t === "ok" && await verifyMatt(`${req.id}.${r.epk}.${r.until}`, r.sig));
+    if (done) { pending.delete(req.id); req.es.close(); markHandled(req.id); renderMatt(); }
+  }, FM.answerMin + "m");
+  pending.set(req.id, req);
+  if (person?.access && person.auto) {                   // trusted: accept straight away
+    setStatus(`${req.name} is finding you. Accepted automatically.`, "ok");
+    if (navigator.vibrate) navigator.vibrate(150);
+    await approve(req.id);
+    return "auto";
+  }
+  renderMatt();
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  return "ok";
+}
+// A message in the pop-up spot, for when a request link can't be shown as a request
+// A request on screen comes first; a notice waits behind it and stays until OK is tapped
+let noticeOpen = null;
+function notice(title, text) { noticeOpen = { title, text }; renderModal(); }
+function showNotice() {
+  const box = $("fmModal");
+  box.hidden = false;
+  box.replaceChildren(el("div", { class: "sheet" },
+    el("div", { class: "who", id: "fmModalTitle" }, noticeOpen.title), el("span", {}, noticeOpen.text),
+    el("button", { type: "button", onclick: () => { noticeOpen = null; renderModal(); } }, "OK")));
+}
+function telLink(phone, label) { return el("a", { class: "num", href: "tel:" + phone.replace(/[^\d+]/g, "") }, label || fmtPhone(phone)); }
+// Accept/deny pop-up for the oldest waiting request
+function renderModal() {
+  const box = $("fmModal"), req = pending.values().next().value;
+  if (!req) { if (noticeOpen) return showNotice(); box.hidden = true; box.replaceChildren(); return; }
+  box.hidden = false;
+  box.replaceChildren(el("div", { class: "sheet" },
+    el("span", { class: "muted", id: "fmModalTitle" }, "Find Matt request" + (pending.size > 1 ? ` · 1 of ${pending.size}` : "")),
+    req.photoUrl ? el("img", { class: "ph", src: req.photoUrl, alt: `Photo from ${req.name}` })
+      : req.photoState === "loading" ? el("span", { class: "muted" }, "Loading their photo…")
+      : req.photoState === "failed" ? el("span", { class: "muted" }, "Their photo couldn't be loaded.")
+      : req.dev && people[req.dev]?.photo ? el("img", { class: "avatar", src: people[req.dev].photo, alt: "" }) : null,
+    el("div", { class: "who" }, req.name),
+    req.phone ? telLink(req.phone) : el("span", { class: "muted" }, "No number given"),
+    req.dev && people[req.dev] ? el("span", { class: "chip" }, `Accepted ${people[req.dev].count}× before`) : el("span", { class: "chip off" }, "New person"),
+    el("span", {}, `wants to see your location and get directions to you for ${FM.shareMin} minutes. They can also choose to share their location with you.`),
+    el("span", { class: "muted" }, "Name and number are what they typed. Tap the number to call and check it's them."),
+    el("div", { class: "row" },
+      el("button", { type: "button", class: "approve", onclick: () => approve(req.id) }, "Accept"),
+      el("button", { type: "button", class: "deny", onclick: () => decline(req.id) }, "Deny"))));
+}
+function renderMatt() {
+  const card = $("mattCard");
+  if (!mattKey) { card.hidden = true; $("fmModal").hidden = true; return; }
+  card.hidden = false;
+  const kids = [el("b", {}, "Find Matt · this is Matt's phone"),
+    el("button", { type: "button", class: "ghost admin-btn", onclick: openAdmin }, `Admin · People (${Object.keys(people).length})`),
+    el("span", { class: "muted" }, "Keep this page open while you share. Locking your phone or switching apps pauses your location.")];
+  for (const r of pending.values()) kids.push(el("div", { class: "req" },
+    el("span", {}, r.photoUrl ? el("img", { class: "avatar", src: r.photoUrl, alt: "" }) : null, el("b", {}, r.name), " wants to find you."),
+    r.phone ? telLink(r.phone) : null,
+    el("div", { class: "row" },
+      el("button", { type: "button", onclick: () => approve(r.id) }, "Accept"),
+      el("button", { type: "button", class: "ghost", onclick: () => decline(r.id) }, "Deny"))));
+  for (const s of shares.values()) {
+    const here = mattPos || last;
+    kids.push(el("div", { class: "req" },
+      el("span", {}, s.thumb ? el("img", { class: "avatar", src: s.thumb, alt: "" }) : null, "Sharing with ", el("b", {}, s.name), s.phone ? " · " + fmtPhone(s.phone) : "", ` · ${Math.max(0, Math.ceil((s.until - Date.now()) / 60000))} min left`),
+      el("span", { class: "muted" }, s.friend
+        ? `${s.thumb ? "" : s.emoji + " "}${s.name} is ${here ? fmtDist(distance(here, s.friend)) + " away" : "on the map"} · seen ${ago(s.friend.at)}. Tap ${s.thumb ? "their photo" : s.emoji} on the map for directions.`
+        : s.said === "no" ? `${s.name} chose not to share their location.` : `Waiting to see if ${s.name} shares their location…`),
+      el("span", { class: "muted" }, s.sentAt ? "Your location sent " + ago(s.sentAt) : mattPos ? "Sending your location…" : "Waiting for your GPS…"),
+      el("div", { class: "row" },
+        s.friend ? (guiding === s.id
+          ? el("button", { type: "button", class: "ghost", onclick: () => { stopGuiding(s); renderMatt(); } }, "Stop directions")
+          : el("button", { type: "button", onclick: () => goTo(s.id) }, `${s.emoji} Directions to ${s.name}`)) : null,
+        el("button", { type: "button", class: "ghost", onclick: () => endShare(s.id) }, "Stop sharing"))));
+  }
+  if (!pending.size && !shares.size) kids.push(el("span", { class: "muted" }, "No requests right now."));
+  card.replaceChildren(...kids);
+  renderModal();
+  const sig = [...shares.values()].map(s => s.id + (s.friend ? "+" : "") + (s.thumb ? "p" : "")).join(",");
+  if (sig !== adminSig) { adminSig = sig; renderAdmin(); }
+}
+/* ----- Admin: everyone Matt has accepted, with access on/off ----- */
+const fmtWhen = t => t ? new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+let adminSig = "";
+function openAdmin() { $("adminModal").hidden = false; renderAdmin(); }
+function closeAdmin() { $("adminModal").hidden = true; $("adminModal").replaceChildren(); }
+function renderAdmin() {
+  const box = $("adminModal");
+  if (box.hidden || !mattKey) return;
+  const list = Object.entries(people).sort((a, b) => (b[1].lastAt || 0) - (a[1].lastAt || 0));
+  const rows = list.map(([dev, p], i) => {
+    const live = [...shares.values()].find(s => s.dev === dev);
+    const access = el("input", { type: "checkbox", id: "acc-" + i, onchange: e => setAccess(dev, e.target.checked) });
+    access.checked = !!p.access;
+    const auto = el("input", { type: "checkbox", id: "auto-" + i, onchange: e => { people[dev].auto = e.target.checked; savePeople(); } });
+    auto.checked = !!p.auto;
+    return el("div", { class: "person" },
+      el("div", {}, p.photo ? el("img", { class: "avatar", src: p.photo, alt: "" }) : null, el("span", { class: "pname" }, p.name || "Someone"),
+        live ? el("span", { class: "chip" }, live.friend ? `${live.emoji} Finding you now` : "Finding you now")
+             : p.access ? null : el("span", { class: "chip off" }, "Access off")),
+      p.phone ? telLink(p.phone) : null,
+      el("span", { class: "muted" }, `Accepted ${p.count || 1}× · last ${fmtWhen(p.lastAt)}` + (p.blockedAt ? ` · blocked a request ${fmtWhen(p.blockedAt)}` : "")),
+      el("label", { class: "toggle", for: "acc-" + i }, access, el("span", {}, p.access ? "Can find me" : "Can't find me")),
+      p.access ? el("label", { class: "toggle", for: "auto-" + i }, auto, el("span", {}, "Accept automatically (no pop-up)")) : null,
+      live?.friend ? el("span", { class: "muted" }, `Sharing their location now · seen ${ago(live.friend.at)}`)
+        : p.lastLoc ? el("span", { class: "muted" }, `Last seen ${fmtWhen(p.lastLoc.at)}`) : el("span", { class: "muted" }, "No saved location yet"),
+      el("div", { class: "row" },
+        directionsButton(dev, p, live),
+        el("button", { type: "button", class: "ghost", onclick: () => forget(dev) }, "Remove from list")));
+  });
+  const myIn = el("input", { id: "mattPhotoIn", type: "file", accept: "image/*" });
+  const myHint = el("span", { class: "hint", hidden: "" });
+  myIn.onchange = async () => {
+    const f = myIn.files?.[0]; if (!f) return;
+    try { mattPhoto = await blobToDataURL(await shrinkImage(f, 400, 0.8)); store("fmMattPhoto", mattPhoto); renderAdmin(); }
+    catch (_) { myHint.textContent = "That photo couldn't be read. Try a different one."; myHint.hidden = false; }
+  };
+  const me_ = el("div", { class: "person" },
+    el("b", {}, "Your photo"),
+    el("div", { class: "photo-pick" },
+      mattPhoto ? el("img", { src: mattPhoto, alt: "Your photo" }) : null,
+      el("label", { class: "pickbtn", for: "mattPhotoIn" }, "📷 ", mattPhoto ? "Change your photo" : "Add your photo", myIn),
+      mattPhoto ? el("button", { type: "button", class: "ghost", onclick: () => { mattPhoto = null; store("fmMattPhoto", null); renderAdmin(); } }, "Remove") : null),
+    myHint,
+    el("span", { class: "muted" }, "People you accept see this photo on their map, marking where you are."));
+  box.replaceChildren(el("div", { class: "sheet wide" },
+    el("h2", { id: "adminTitle" }, "Admin · People"),
+    me_,
+    el("span", { class: "muted" }, "Everyone you've accepted with Find Matt. Turn access off to stop someone finding you: it ends any share in progress and their new requests are declined without asking you."),
+    ...(rows.length ? rows : [el("span", { class: "muted" }, "No one yet. People you accept will appear here.")]),
+    el("span", { class: "muted" }, "This list is kept on this phone."),
+    el("button", { type: "button", onclick: closeAdmin }, "Done")));
+}
+// Live directions if they're sharing now, otherwise to the last place they were seen
+function directionsButton(dev, p, live) {
+  if (live?.friend) return el("button", { type: "button", onclick: () => { closeAdmin(); goTo(live.id); } }, `Directions to ${p.name}`);
+  if (p.lastLoc) return el("button", { type: "button", onclick: () => {
+      closeAdmin(); guiding = null; store("fmGuiding", null);
+      followPerson(`${p.name} (last seen)`, p.lastLoc, {}, false);
+      checkMyLocation();
+    } }, `Directions to where ${p.name} was last seen`);
+  // No location saved for them yet: the button explains instead of doing nothing
+  return el("button", { type: "button", class: "ghost", onclick: () => {
+      closeAdmin();
+      notice(`No location for ${p.name} yet`,
+        `Their location is saved here once they tap "Yes, share my location" during Find Matt. ` +
+        `People you accepted before this update need to share once more.` + (p.phone ? ` You can also call them at ${fmtPhone(p.phone)}.` : ""));
+    } }, `Directions to ${p.name}`);
+}
+// Directions start from where Matt is. If his phone can't give a location, say so instead of failing quietly.
+function checkMyLocation() {
+  const explain = () => {
+    if (last) return;
+    if (locDenied || !("geolocation" in navigator)) notice("Turn on location for directions",
+      "Directions start from where you are, and this browser isn't allowed to use your location. On iPhone: Settings → Apps → Chrome → Location → While Using App. Then reload this page and tap Directions again.");
+    else notice("Finding your location…", "Your route will appear as soon as your phone finds where you are. Make sure Location Services is on.");
+  };
+  if (locDenied) explain(); else setTimeout(explain, 6000);
+}
+function setAccess(dev, on) {
+  const p = people[dev]; if (!p) return;
+  p.access = on; if (!on) p.auto = false;
+  savePeople();
+  if (!on) for (const s of [...shares.values()]) if (s.dev === dev) endShare(s.id);
+  renderAdmin(); renderMatt();
+}
+function forget(dev) {
+  for (const s of [...shares.values()]) if (s.dev === dev) endShare(s.id);
+  delete people[dev]; savePeople(); renderAdmin(); renderMatt();
+}
+async function approve(id) {
+  const req = pending.get(id); if (!req) return;
+  pending.delete(id); markHandled(id); req.es?.close();
+  try {
+    const eph = await crypto.subtle.generateKey(ECDH, false, ["deriveKey"]);
+    const epk = b64u.enc(await crypto.subtle.exportKey("raw", eph.publicKey));
+    const until = Date.now() + FM.shareMin * 60000;
+    const sig = b64u.enc(await crypto.subtle.sign(SIG, mattKey, te.encode(`${id}.${epk}.${until}`)));
+    const s = { id, dev: req.dev, thumb: req.thumb || (req.dev && people[req.dev]?.photo), name: req.name, phone: req.phone, topic: `${FM.topic}-${id}`, until, key: await aesKey(eph.privateKey, req.pub, true), sentAt: 0, sentPos: null, track: {} };
+    await relayPost(s.topic, { t: "ok", epk, until, sig });
+    if (req.dev) {
+      const was = people[req.dev] || {};
+      people[req.dev] = { ...was, name: req.name, phone: req.phone, access: true, auto: !!was.auto, photo: req.thumb || was.photo,
+        firstAt: was.firstAt || Date.now(), lastAt: Date.now(), count: (was.count || 0) + 1 };
+      savePeople();
+    }
+    s.startedAt = Date.now();
+    s.keyRaw = b64u.enc(await crypto.subtle.exportKey("raw", s.key));
+    listenShare(s);
+    shares.set(id, s);
+    saveShares();
+    if (mattPhoto) uploadPhoto(s.key, dataURLtoBlob(mattPhoto), `${s.topic}-mp`)
+      .then(async ref => relayPost(s.topic, await seal(s.key, { t: "mphoto", ...ref }))).catch(() => {});
+    startMattGps();
+    if (mattPos) sendLoc(s, true);
+  } catch (_) { setStatus("Couldn't send your answer. Check your connection.", "err"); }
+  renderMatt();
+}
+async function decline(id) {
+  pending.get(id)?.es?.close(); pending.delete(id); markHandled(id); renderMatt();
+  try { await relayPost(`${FM.topic}-${id}`, { t: "deny", sig: b64u.enc(await crypto.subtle.sign(SIG, mattKey, te.encode(`${id}.deny`))) }); } catch (_) {}
+}
+// Messages on a share: their location, "no thanks", or that they've stopped. `since` replays what was missed.
+function listenShare(s, since) {
+  const id = s.id;
+  s.es = relayListen(s.topic, async m => {
+    let r; try { r = JSON.parse(m.message); } catch (_) { return; }
+    if (r.t === "cancel") return endShare(id, true);
+    if (r.t !== "enc") return;
+    let q; try { q = await unseal(s.key, r); } catch (_) { return; }
+    if (!shares.has(id)) return;
+    if (q.t === "fno") { s.friend = null; s.said = "no"; dropPin(s); if (guiding === id) stopGuiding(s); saveShares(); return renderMatt(); }
+    if (q.t !== "floc") return;                             // our own messages come back as "loc": skip
+    if (!s.friend && !since && navigator.vibrate) navigator.vibrate(150);
+    const at = m.time ? m.time * 1000 : Date.now();
+    s.friend = { lat: q.lat, lng: q.lng, acc: q.acc, at: Math.min(at, Date.now()) }; s.said = "yes";
+    if (s.dev && people[s.dev]) { people[s.dev].lastLoc = { lat: q.lat, lng: q.lng, at: s.friend.at }; savePeople(); }
+    placePin(s);
+    if (guiding === id) followPerson(s.name, s.friend, s.track, true);
+    saveShares();
+    renderMatt();
+  }, since);
+}
+// Active shares survive a reload of Matt's phone (kept on this phone until they end)
+function saveShares() {
+  store("fmShares", JSON.stringify([...shares.values()].map(s => ({ id: s.id, dev: s.dev, name: s.name, phone: s.phone, topic: s.topic,
+    until: s.until, startedAt: s.startedAt, keyRaw: s.keyRaw, emoji: s.emoji, friend: s.friend, said: s.said }))));
+  store("fmGuiding", guiding);
+}
+async function restoreShares() {
+  let saved = []; try { saved = JSON.parse(load("fmShares") || "[]"); } catch (_) {}
+  const wasGuiding = load("fmGuiding");
+  for (const d of saved) {
+    if (shares.has(d.id) || !(d.until > Date.now()) || !d.keyRaw) continue;
+    try {
+      const key = await crypto.subtle.importKey("raw", b64u.dec(d.keyRaw), { name: "AES-GCM" }, true, ["encrypt", "decrypt"]);
+      const s = { ...d, key, sentAt: 0, sentPos: null, track: {}, thumb: d.dev && people[d.dev]?.photo };
+      shares.set(s.id, s);
+      if (s.friend) placePin(s);
+      listenShare(s, String(Math.floor((s.startedAt || Date.now()) / 1000)));   // replay everything since the share began
+    } catch (_) {}
+  }
+  if (shares.size) {
+    startMattGps();
+    if (wasGuiding && shares.get(wasGuiding)?.friend) goTo(wasGuiding);
+    setStatus(`Reconnected to ${shares.size} ${shares.size === 1 ? "person" : "people"} you're sharing with.`, "ok");
+  }
+  saveShares(); renderMatt();
+}
+async function endShare(id, theyCancelled) {
+  const s = shares.get(id); if (!s) return;
+  shares.delete(id); s.es?.close();
+  dropPin(s);
+  if (guiding === id) stopGuiding(s);
+  saveShares();
+  if (!theyCancelled) try { await relayPost(s.topic, await seal(s.key, { t: "end" })); } catch (_) {}
+  if (!shares.size) stopMattGps();
+  renderMatt();
+}
+// Send at most every 15 s, and only when Matt has moved 10 m or 90 s have passed (keeps within the relay's free limits)
+async function sendLoc(s, force) {
+  const now = Date.now();
+  if (!force && (now - s.sentAt < 15000 || (s.sentPos && distance(s.sentPos, mattPos) < 10 && now - s.sentAt < 90000))) return;
+  s.sentAt = now; s.sentPos = { ...mattPos };
+  try { await relayPost(s.topic, await seal(s.key, { t: "loc", lat: mattPos.lat, lng: mattPos.lng, acc: mattPos.acc, ts: now })); }
+  catch (_) { s.sentAt = 0; }
+}
+async function startMattGps() {
+  if (mattWatch != null || !("geolocation" in navigator)) return;
+  mattWatch = navigator.geolocation.watchPosition(p => {
+    mattPos = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy };
+    for (const s of shares.values()) sendLoc(s);
+  }, onErr, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+  try { mattWake = await navigator.wakeLock?.request("screen"); } catch (_) {}
+}
+function stopMattGps() {
+  if (mattWatch != null) navigator.geolocation.clearWatch(mattWatch);
+  mattWatch = null; mattPos = null;
+  try { mattWake?.release(); } catch (_) {} mattWake = null;
+}
+setInterval(() => {
+  for (const s of shares.values()) { if (Date.now() > s.until) endShare(s.id); else if (mattPos) sendLoc(s); }
+  for (const r of pending.values()) if (r.at && Date.now() - r.at > FM.answerMin * 60000) { r.es?.close(); pending.delete(r.id); markHandled(r.id); }
+  if (shares.size || pending.size) renderMatt();
+  if (fm?.state === "sharing") renderFind();
+}, 5000);
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "visible" && mattWatch != null && !mattWake)
+    try { mattWake = await navigator.wakeLock?.request("screen"); } catch (_) {}
+});
+
+async function loadMattKey(raw) {
+  const k = await crypto.subtle.importKey("pkcs8", b64u.dec(raw), ECDSA, true, ["sign"]);
+  if (!await verifyMatt("check", b64u.enc(await crypto.subtle.sign(SIG, k, te.encode("check"))))) throw new Error("wrong key");
+  // The same key also unlocks requests. Going through JWK works in every browser, Safari included.
+  const jwk = await crypto.subtle.exportKey("jwk", k);
+  delete jwk.key_ops; delete jwk.alg;
+  mattDh = await crypto.subtle.importKey("jwk", jwk, ECDH, false, ["deriveKey"]);
+  mattKey = await crypto.subtle.importKey("pkcs8", b64u.dec(raw), ECDSA, false, ["sign"]);
+}
+async function initFindMatt() {
+  const raw = load("fmMattKey");
+  if (raw) { try { await loadMattKey(raw); } catch (_) { mattKey = mattDh = null; } }
+  if (mattKey) startMattMode();
+  await handleLink();
+}
+function startMattMode() {
+  $("findBtn").hidden = true;
+  renderMatt();
+  if (mattEs) return;
+  restoreShares();
+  // Requests sent in the last 10 minutes, then new ones live
+  mattEs = relayListen(FM.topic, m => {
+    const req = (m.click || "").match(/#req=([\w-]+)/);
+    if (m.event === "message" && req) { try { addRequest(JSON.parse(td.decode(b64u.dec(req[1])))); } catch (_) {} }
+  }, FM.answerMin + "m");
+}
+// Links into the app: the one-time setup link, and request links from notifications
+async function handleLink() {
+  const h = location.hash;
+  const keyIn = h.match(/^#matt-key=([\w-]+)/);
+  const reqIn = h.match(/^#req=([\w-]+)(?:\.(accept))?$/);
+  if (!keyIn && !reqIn) return;
+  history.replaceState(null, "", location.pathname + location.search);
+  if (keyIn) {
+    try { await loadMattKey(keyIn[1]); store("fmMattKey", keyIn[1]); startMattMode();
+          notice("You're all set", "This phone is now Matt's phone. Find Matt requests will pop up here to accept or deny."); }
+    catch (_) { notice("Setup link didn't work", "Copy the whole setup link exactly as it was sent and open it again."); }
+    return;
+  }
+  if (!mattKey) return notice("This browser isn't set up as Matt's phone",
+    "Open your private setup link in this same browser, then tap the notification again. On iPhone, Safari and an app saved to the Home Screen are set up separately.");
+  let req; try { req = JSON.parse(td.decode(b64u.dec(reqIn[1]))); } catch (_) { req = null; }
+  const r = req ? await addRequest(req) : "bad";
+  if (r === "blocked") return notice("Access is off", "You've turned off this person's access, so the request was declined. Turn it back on in Admin · People to let them find you.");
+  if (r === "answered") return notice("Already answered", "You've already accepted or denied this request.");
+  if (r === "bad") return notice("Couldn't open this request", "The link is incomplete or wasn't sent from Find Matt.");
+  if (reqIn[2] === "accept") approve(req.id);
+}
+addEventListener("hashchange", handleLink);
+$("findBtn").onclick = () => {
+  if (fm && ["sending", "waiting", "approved", "sharing"].includes(fm.state)) return;   // a request is already in progress
+  cancelFind(false); fm = { state: "form" }; renderFind();
+};
+initFindMatt();
+</script>
+</body>
+</html>
