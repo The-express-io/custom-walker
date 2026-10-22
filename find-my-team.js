@@ -87,6 +87,26 @@ const color = r => ROLE_COLOR[r] || "#14202b";
 const msgLink = (p, ev) => digits(p?.phone) ? "https://wa.me/" + digits(p.phone) : (ev?.group || "");
 const encCfg = cfg => b64u.enc(te.encode(JSON.stringify(cfg)));
 const decCfg = s => JSON.parse(td.decode(b64u.dec(s)));
+// Dates and times: the event has a date and a start/end time; each person has their own shift.
+const fmtT = t => { if (!t) return ""; const [h, m] = t.split(":").map(Number); return new Date(2000, 0, 1, h, m).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); };
+const fmtD = d => d ? new Date(d + "T12:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "";
+const range = (a, b) => a && b ? `${fmtT(a)}–${fmtT(b)}${b <= a ? " (next day)" : ""}` : a ? "from " + fmtT(a) : b ? "until " + fmtT(b) : "";
+const shiftWord = p => p?.role === "Client contact" ? "On site" : "Shift";
+function shiftWindow(e, p) {                 // real start/end times for a person's shift, or null
+  if (!e?.date || !p?.start) return null;
+  const s = new Date(`${e.date}T${p.start}`);
+  let t = p.end ? new Date(`${e.date}T${p.end}`) : null;
+  if (t && t <= s) t = new Date(t.getTime() + 86400000);
+  return { s, t };
+}
+function shiftNote(e, p) {                   // "starts in 1 h 20 min", "shift over", or ""
+  const w = shiftWindow(e, p); if (!w) return "";
+  const now = Date.now(), mins = Math.round((w.s - now) / 60000);
+  if (mins > 0) return mins < 60 ? `starts in ${mins} min` : mins < 24 * 60 ? `starts in ${Math.floor(mins / 60)} h${mins % 60 ? " " + (mins % 60) + " min" : ""}` : "starts " + fmtD(e.date);
+  if (w.t && now > w.t) return (p.role === "Client contact" ? "time" : "shift") + " over";
+  return "";
+}
+const isCoord = p => ["Coordinator", "Lead Planner"].includes(p?.role);
 const linkFor = (cfg, pid) => location.origin + location.pathname + "#team=" + encCfg(cfg) + "." + pid;
 
 /* ---------- state ---------- */
@@ -143,7 +163,7 @@ async function onMessage(raw) {
     if (guide === p.id) follow();
   } else if (p.t === "off" && p.id && p.id !== meId) {
     if (!pos[p.id] || (p.ts || 0) >= pos[p.id].ts) delete pos[p.id];
-  } else if (p.t === "roster" && p.cfg && (p.cfg.rv || 0) > (ev.rv || 0)) {
+  } else if (p.t === "roster" && p.cfg && (p.cfg.rv || 0) > (ev.rv || 0) && p.cfg.cpub === ev.cpub && await verifyCfg(ev.cpub, p.cfg, p.sig)) {
     // the coordinator changed the team: take the new list, keep this event's id and key
     ev = { ...p.cfg, id: ev.id, k: ev.k }; jset("ftEvent", ev);
     if (!me()) { leave(true); return; }
@@ -237,14 +257,33 @@ function handleTeamLink() {
 addEventListener("hashchange", handleTeamLink);
 
 /* ---------- coordinator setup ---------- */
-function newDraft() { return { id: uid(), k: b64u.enc(crypto.getRandomValues(new Uint8Array(32))), name: "", venue: "", group: "", zones: [...DEFAULT_ZONES], people: [], rv: 0 }; }
+// Team updates are signed by the coordinator's phone. Its private key never leaves that phone;
+// the public key rides in every link, so other phones accept changes only from the coordinator.
+async function ensureSigner(d) {
+  if (d.cpub && load("ftSign:" + d.id)) return;
+  const kp = await crypto.subtle.generateKey(ECDSA, true, ["sign", "verify"]);
+  store("ftSign:" + d.id, JSON.stringify(await crypto.subtle.exportKey("jwk", kp.privateKey)));
+  d.cpub = b64u.enc(await crypto.subtle.exportKey("raw", kp.publicKey)); saveDraft();
+}
+async function signCfg(id, cfg) {
+  const jwk = JSON.parse(load("ftSign:" + id) || "null"); if (!jwk) return null;
+  const k = await crypto.subtle.importKey("jwk", { ...jwk, key_ops: ["sign"] }, ECDSA, false, ["sign"]);
+  return b64u.enc(await crypto.subtle.sign(SIG, k, te.encode(JSON.stringify(cfg))));
+}
+async function verifyCfg(cpub, cfg, sig) {
+  if (!cpub || !sig) return false;
+  try { const k = await crypto.subtle.importKey("raw", b64u.dec(cpub), ECDSA, false, ["verify"]);
+        return await crypto.subtle.verify(SIG, k, b64u.dec(sig), te.encode(JSON.stringify(cfg))); } catch (_) { return false; }
+}
+function newDraft() { return { id: uid(), k: b64u.enc(crypto.getRandomValues(new Uint8Array(32))), name: "", venue: "", date: "", start: "", end: "", group: "", zones: [...DEFAULT_ZONES], people: [], rv: 0 }; }
 function saveDraft() { jset("ftDraft", draft); }
 async function publishDraft() {
+  await ensureSigner(draft);
   draft.rv = Date.now(); saveDraft();
   if (ev?.id === draft.id) {                     // live event on this phone: push the new roster to everyone
     ev = { ...draft }; jset("ftEvent", ev);
-    const { k, ...cfg } = draft;                  // the key never travels through the relay
-    await post({ t: "roster", cfg });
+    const { k, ...cfg } = draft;                  // the event key never travels through the relay
+    await post({ t: "roster", cfg, sig: await signCfg(draft.id, cfg) });
     if (!me()) leave(true);
   }
 }
@@ -275,18 +314,22 @@ function renderSetup() {
   const roleIn = el("select", { "aria-label": "Role" }, ...ROLES.map(r => el("option", {}, r)));
   roleIn.value = d.people.length ? "Server" : "Coordinator";
   const phoneIn = el("input", { type: "tel", inputmode: "tel", placeholder: "WhatsApp number, e.g. +1 202 555 0134 (optional)", "aria-label": "WhatsApp number" });
+  const sIn = el("input", { type: "time", "aria-label": "Shift starts" }), eIn = el("input", { type: "time", "aria-label": "Shift ends" });
+  sIn.value = d.start || ""; eIn.value = d.end || "";
   const hint = el("span", { class: "hint", hidden: "" });
   const addPerson = e => {
     e.preventDefault();
     const n = nameIn.value.trim();
     if (!n) { hint.textContent = "Enter a name."; hint.hidden = false; return nameIn.focus(); }
-    d.people.push({ id: uid(6), name: n.slice(0, 40), role: roleIn.value, phone: phoneIn.value.trim().slice(0, 20) });
+    d.people.push({ id: uid(6), name: n.slice(0, 40), role: roleIn.value, phone: phoneIn.value.trim().slice(0, 20), start: sIn.value || d.start || "", end: eIn.value || d.end || "" });
     saveDraft(); renderSetup(); card.querySelector("[aria-label='Name']")?.focus();
   };
   card.replaceChildren(
     el("b", {}, "Set up the team"),
     f("Event name", inp("name", "Hart wedding · Saturday")),
     f("Venue", inp("venue", "The Foundry, 1055 Thomas Jefferson St NW")),
+    f("Date", inp("date", "", "date")),
+    el("div", { class: "grid2" }, f("Event starts", inp("start", "", "time")), f("Event ends", inp("end", "", "time"))),
     f("WhatsApp group link", inp("group", "https://chat.whatsapp.com/…", "url")),
     el("span", { class: "muted" }, "In WhatsApp: group info → Invite via link → Copy link."),
     el("div", { class: "sec" }, "Venue zones"),
@@ -295,12 +338,21 @@ function renderSetup() {
     el("div", { class: "row" }, zoneIn, el("button", { type: "button", class: "ghost", onclick: addZone, style: "flex:0 0 auto" }, "Add zone")),
     el("span", { class: "muted" }, "Zones help indoors, where phone GPS can be 10–30 m off."),
     el("div", { class: "sec" }, `Team (${d.people.length})`),
-    ...d.people.map((p, i) => el("div", { class: "tm" },
-      el("span", { class: "av", style: `background:${color(p.role)}` }, initials(p.name)),
-      el("div", {}, el("div", { class: "nm" }, p.name), el("span", { class: "muted" }, p.role + (p.phone ? " · " + p.phone : ""))),
-      el("button", { type: "button", class: "ghost", "aria-label": "Remove " + p.name, onclick: () => { d.people.splice(i, 1); saveDraft(); renderSetup(); } }, "Remove"))),
+    ...d.people.map((p, i) => {
+      const ts = el("input", { type: "time", "aria-label": `${p.name}: ${shiftWord(p).toLowerCase()} starts` }), te_ = el("input", { type: "time", "aria-label": `${p.name}: ${shiftWord(p).toLowerCase()} ends` });
+      ts.value = p.start || ""; te_.value = p.end || "";
+      ts.onchange = () => { p.start = ts.value; saveDraft(); };
+      te_.onchange = () => { p.end = te_.value; saveDraft(); };
+      return el("div", { class: "tm" },
+        el("span", { class: "av", style: `background:${color(p.role)}` }, initials(p.name)),
+        el("div", {}, el("div", { class: "nm" }, p.name), el("span", { class: "muted" }, p.role + (p.phone ? " · " + p.phone : ""))),
+        el("button", { type: "button", class: "ghost", "aria-label": "Remove " + p.name, onclick: () => { d.people.splice(i, 1); saveDraft(); renderSetup(); } }, "Remove"),
+        el("div", { class: "acts" }, el("label", { class: "f" }, shiftWord(p) + " from", ts), el("label", { class: "f" }, "to", te_)));
+    }),
+    d.people.length ? el("span", { class: "muted" }, "Only you, the coordinator, can set and change these times. Saving sends them to everyone's phone.") : null,
     el("form", { class: "fmform", onsubmit: addPerson },
-      el("div", { class: "grid2" }, nameIn, roleIn), phoneIn, hint,
+      el("div", { class: "grid2" }, nameIn, roleIn), phoneIn,
+      el("div", { class: "grid2" }, el("label", { class: "f" }, "Shift starts", sIn), el("label", { class: "f" }, "Shift ends", eIn)), hint,
       el("button", { type: "submit", class: "ghost" }, d.people.length ? "Add another person" : "Add yourself first")),
     el("div", { class: "row" },
       el("button", { type: "button", onclick: async () => {
@@ -315,7 +367,8 @@ function renderLinks() {
     catch (_) { prompt("Copy this link", url); }
   };
   const share = async (p, url) => {
-    const text = `${p.name}, here's your link for ${d.name || "the event"}${d.venue ? " at " + d.venue : ""}. Open it on your phone and tap Check in when you arrive.`;
+    const when = [fmtD(d.date), range(p.start, p.end) ? `${shiftWord(p) === "Shift" ? "your shift" : "on site"} ${range(p.start, p.end)}` : ""].filter(Boolean).join(", ");
+    const text = `${p.name}, here's your link for ${d.name || "the event"}${d.venue ? " at " + d.venue : ""}${when ? " (" + when + ")" : ""}. Open it on your phone and tap Check in when you arrive.`;
     try { await navigator.share({ title: "Find my team", text, url }); } catch (_) { copy(url, null); }
   };
   card.replaceChildren(
@@ -325,7 +378,7 @@ function renderLinks() {
       const url = linkFor(d, p.id);
       const cp = el("button", { type: "button", class: "ghost", onclick: e => copy(url, e.currentTarget) }, "Copy");
       return el("div", { class: "link" },
-        el("div", {}, el("div", { class: "nm" }, p.name), el("span", { class: "muted" }, p.role)),
+        el("div", {}, el("div", { class: "nm" }, p.name), el("span", { class: "muted" }, p.role + (range(p.start, p.end) ? " · " + range(p.start, p.end) : ""))),
         el("div", { class: "row", style: "flex-wrap:nowrap" },
           navigator.share ? el("button", { type: "button", class: "ghost", onclick: () => share(p, url) }, "Send") : cp,
           navigator.share ? cp : null,
@@ -340,14 +393,16 @@ function renderLive() {
   const zoneSel = el("select", { "aria-label": "Where I am" }, el("option", { value: "" }, "I'm at… (optional)"), ...ev.zones.map(z => el("option", {}, z)));
   zoneSel.value = zone;
   zoneSel.onchange = () => { zone = zoneSel.value; store("ftZone", zone); send(true); };
-  const canEdit = draft?.id === ev.id;
+  const canEdit = draft?.id === ev.id && isCoord(m);       // the team, times and shifts are the coordinator's to change
+  const evWhen = [fmtD(ev.date), range(ev.start, ev.end)].filter(Boolean).join(" · ");
+  const myShift = range(m.start, m.end), myNote = shiftNote(ev, m);
   card.replaceChildren(
     el("div", { class: "row", style: "align-items:center;justify-content:space-between" },
-      el("div", {}, el("b", {}, ev.name || "Event"), el("div", { class: "muted" }, ev.venue || "")),
+      el("div", {}, el("b", {}, ev.name || "Event"), el("div", { class: "muted" }, ev.venue || ""), evWhen ? el("div", { class: "muted" }, evWhen) : null),
       el("span", { class: "pill " + (on ? "on" : "off") }, on ? "Sharing" : "Not sharing")),
     el("div", { class: "tm", style: "border-top:0;padding-top:0" },
       el("span", { class: "av", style: `background:${color(m.role)}` }, initials(m.name)),
-      el("div", {}, el("div", { class: "nm" }, m.name + " (you)"), el("span", { class: "muted" }, m.role)),
+      el("div", {}, el("div", { class: "nm" }, m.name + " (you)"), el("span", { class: "muted" }, m.role + (myShift ? ` · ${shiftWord(m)} ${myShift}` : "") + (myNote ? ` · ${myNote}` : ""))),
       el("span", {}),
       el("div", { class: "acts" },
         on ? el("button", { type: "button", class: "ghost", onclick: checkOut }, isClient ? "Stop sharing" : "Check out")
@@ -382,9 +437,11 @@ function liveRefresh() {
     const status = !live ? [el("span", { class: "dot" }), "Not checked in"]
       : [el("span", { class: "dot on" }), at.zone || "On site", stale ? " · seen " + ago(at.ts) : ""];
     const msg = msgLink(p, ev);
+    const sh = range(p.start, p.end), note = shiftNote(ev, p);
     return el("div", { class: "tm" },
       el("span", { class: "av" + (live ? "" : " off"), style: `background:${color(p.role)}` }, initials(p.name)),
-      el("div", {}, el("div", { class: "nm" }, p.name), el("span", { class: "muted" }, p.role + " · ", ...status)),
+      el("div", {}, el("div", { class: "nm" }, p.name), el("span", { class: "muted" }, p.role + " · ", ...status),
+        sh ? el("div", { class: "muted" }, `${shiftWord(p)} ${sh}${note ? " · " + note : ""}`) : null),
       el("div", { class: "dd" }, d != null ? el("span", { style: `display:inline-block;transform:rotate(${heading != null ? b - heading : b}deg)`, "aria-hidden": "true" }, "↑") : "",
         d != null ? " " + fmtDist(d) : "", d != null ? el("small", {}, "±" + Math.round(at.acc || 0) + " m") : ""),
       el("div", { class: "acts" },
