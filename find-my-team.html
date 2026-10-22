@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Find my team · Culinary Express</title>
+<meta name="theme-color" content="#0B0B0B">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alfa+Slab+One&family=Courier+Prime:wght@400;700&family=Libre+Franklin:wght@400;500;600;800&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<!--
+  FIND MY TEAM · V1
+  Culinary Express, live staff locator for events.
+
+  What it does
+  - Coordinator sets up an event: name, venue, WhatsApp group link, venue zones, and the team
+    (coordinator, staff, and the client's on-site contact). Each person gets a personal link.
+  - Opening a personal link identifies that person. Staff "Check in" to start sharing location;
+    "Check out" stops it and removes them from the map. Location is never shared off shift.
+  - Everyone sees the others by name and role, with distance, direction and zone.
+    "Find" opens a pointer screen (compass arrow + distance). "Message" opens WhatsApp:
+    the event group, or a one-to-one chat (wa.me) when the person has a phone number.
+
+  For the developer
+  - All event setup travels inside the link (#e=...), so V1 needs no server for setup.
+  - Live positions go through the Sync adapter below. V1 ships with a same-device adapter
+    (BroadcastChannel + localStorage) so it can be demoed across browser tabs, plus a
+    "Simulate team" demo mode. To go live across phones, implement Sync with a realtime
+    backend (Supabase Realtime, Firebase, Ably, Pusher...) keyed by event id. Nothing else changes.
+  - Map tiles: OpenStreetMap public tiles, fine for testing; use a tile provider for production.
+  - Geolocation and the compass need HTTPS (or localhost). iOS asks for compass permission on tap.
+-->
+<style>
+:root{
+  --ink:#0B0B0B; --paper:#FFFFFF; --line:#D9D6CF; --muted:#5E5A54; --soft:#F3F1EC;
+  --red:#C1272D; --red-ink:#8E1C21; --green:#1F7A4D; --amber:#B26A00; --wa:#1DA851;
+  --radius:14px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ink:#F4F2EE; --paper:#111111; --line:#2E2C29; --muted:#A8A39B; --soft:#1B1A18;
+    --red:#E0484E; --red-ink:#FF8A8F; --green:#43B37A; --amber:#E0A040; --wa:#2BC864;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--paper);color:var(--ink);font-family:'Libre Franklin',system-ui,sans-serif;font-size:16px;line-height:1.45;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:inherit}
+.wrap{max-width:560px;margin:0 auto;padding:0 16px 40px}
+header.top{position:sticky;top:0;z-index:500;background:var(--ink);color:var(--paper);padding:12px 16px calc(12px) }
+header.top .row{max-width:560px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:baseline;gap:10px;min-width:0}
+.brand b{font-family:'Alfa Slab One',serif;font-weight:400;font-size:20px;letter-spacing:.01em;white-space:nowrap}
+.brand span{font-family:'Courier Prime',monospace;font-weight:700;font-size:12px;letter-spacing:.14em;text-transform:uppercase;opacity:.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tag{font-family:'Courier Prime',monospace;font-weight:700;font-size:12px;letter-spacing:.12em;text-transform:uppercase;background:var(--red);color:#fff;padding:4px 8px;border-radius:4px;white-space:nowrap}
+h1{font-family:'Alfa Slab One',serif;font-weight:400;font-size:30px;line-height:1.1;margin:24px 0 8px}
+h2{font-family:'Courier Prime',monospace;font-weight:700;font-size:13px;letter-spacing:.14em;text-transform:uppercase;margin:28px 0 10px;color:var(--muted)}
+p.lead{margin:0 0 8px;color:var(--muted)}
+label{display:block;font-weight:600;font-size:14px;margin:14px 0 6px}
+input[type=text],input[type=tel],input[type=url],select{width:100%;min-height:46px;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;background:var(--paper)}
+input:focus,select:focus,button:focus-visible{outline:3px solid var(--red);outline-offset:1px}
+.hint{font-size:13px;color:var(--muted);margin-top:6px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:46px;padding:10px 16px;border-radius:10px;border:1.5px solid var(--ink);background:var(--paper);font-weight:700;cursor:pointer;text-decoration:none;white-space:nowrap}
+.btn.primary{background:var(--red);border-color:var(--red);color:#fff}
+.btn.dark{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.btn.wa{background:var(--wa);border-color:var(--wa);color:#fff}
+.btn.ghost{border-color:var(--line)}
+.btn.sm{min-height:40px;padding:8px 12px;font-size:14px}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.row2{display:flex;gap:10px;flex-wrap:wrap}
+.row2>*{flex:1 1 140px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:var(--soft);border:1px solid var(--line);font-size:14px}
+.chip button{border:0;background:none;padding:0 2px;cursor:pointer;font-size:16px;line-height:1;color:var(--muted)}
+.card{border:1.5px solid var(--line);border-radius:var(--radius);padding:14px;background:var(--paper)}
+.list{display:flex;flex-direction:column;gap:10px}
+.person{display:grid;grid-template-columns:44px 1fr auto;gap:12px;align-items:center}
+.av{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:15px;color:#fff;background:var(--ink)}
+.av.off{opacity:.35}
+.pname{font-weight:700}
+.pmeta{font-size:13px;color:var(--muted)}
+.pmeta .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:1px;background:var(--muted)}
+.pmeta .dot.on{background:var(--green)}
+.pact{display:flex;gap:8px;grid-column:1 / -1}
+.pact .btn{flex:1}
+.dist{font-family:'Courier Prime',monospace;font-weight:700;font-size:15px;text-align:right;white-space:nowrap}
+.dist small{display:block;font-size:12px;color:var(--muted);font-weight:400}
+.arrow{display:inline-block;transition:transform .25s ease}
+#map{height:42vh;min-height:260px;border-bottom:2px solid var(--ink)}
+.me{display:flex;flex-direction:column;gap:12px}
+.me .status{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.pill{font-family:'Courier Prime',monospace;font-weight:700;font-size:12px;letter-spacing:.1em;text-transform:uppercase;padding:5px 9px;border-radius:999px;border:1.5px solid currentColor}
+.pill.on{color:var(--green)} .pill.off{color:var(--muted)} .pill.warn{color:var(--amber)}
+.shareurl{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.shareurl:first-child{border-top:0}
+.shareurl .who{font-weight:700}
+.shareurl .who small{display:block;font-weight:400;color:var(--muted);font-size:13px}
+.notice{background:var(--soft);border-left:4px solid var(--red);padding:10px 12px;border-radius:8px;font-size:14px}
+.empty{color:var(--muted);font-size:14px;padding:6px 0}
+/* Find overlay */
+#find{position:fixed;inset:0;z-index:1000;background:var(--ink);color:var(--paper);display:none;flex-direction:column}
+#find.open{display:flex}
+#find .fhead{display:flex;justify-content:space-between;align-items:center;padding:14px 16px}
+#find .fbody{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:16px;text-align:center}
+#find .big{font-family:'Alfa Slab One',serif;font-size:56px;line-height:1}
+#find .who{font-size:22px;font-weight:800}
+#find .zone{font-family:'Courier Prime',monospace;font-weight:700;letter-spacing:.12em;text-transform:uppercase;font-size:14px;opacity:.85}
+#needle{width:180px;height:180px;border-radius:50%;border:3px solid rgba(255,255,255,.25);display:grid;place-items:center}
+#needle svg{width:120px;height:120px;transition:transform .2s ease}
+#find .fact{display:flex;gap:10px;padding:16px;padding-bottom:calc(16px + env(safe-area-inset-bottom))}
+#find .fact .btn{flex:1}
+#find .btn{border-color:rgba(255,255,255,.4);background:transparent;color:#fff}
+#find .btn.wa{background:var(--wa);border-color:var(--wa)}
+#find .small{font-size:13px;opacity:.75;max-width:340px}
+.leaflet-container{font-family:'Libre Franklin',sans-serif}
+.mk{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:800;font-size:12px;border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)}
+.mk.me{background:#C1272D}
+footer{margin-top:28px;font-size:12px;color:var(--muted);font-family:'Courier Prime',monospace}
+[hidden]{display:none!important}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+</style>
+</head>
+<body>
+<header class="top"><div class="row">
+  <div class="brand"><b>Find my team</b><span id="hdrEvent">Culinary Express</span></div>
+  <span class="tag" id="hdrRole">Setup</span>
+</div></header>
+
+<main id="app"></main>
+
+<div id="find" role="dialog" aria-modal="true" aria-labelledby="fWho">
+  <div class="fhead">
+    <span class="tag">Finding</span>
+    <button class="btn sm" id="fClose" aria-label="Close">Done</button>
+  </div>
+  <div class="fbody">
+    <div class="who" id="fWho"></div>
+    <div class="zone" id="fZone"></div>
+    <div id="needle" aria-hidden="true">
+      <svg viewBox="0 0 100 100"><path d="M50 6 L70 70 L50 58 L30 70 Z" fill="#C1272D" stroke="#fff" stroke-width="3" stroke-linejoin="round"/></svg>
+    </div>
+    <div class="big" id="fDist">—</div>
+    <div class="small" id="fNote"></div>
+    <button class="btn sm" id="fCompass" hidden>Turn on compass</button>
+  </div>
+  <div class="fact">
+    <a class="btn" id="fMaps" target="_blank" rel="noopener">Walking directions</a>
+    <a class="btn wa" id="fMsg" target="_blank" rel="noopener">Message</a>
+  </div>
+</div>
+
+<script>
+/* ============================ Constants ============================ */
+const ROLES = ['Coordinator','Lead Planner','Server','Bartender','Sommelier','Attendant','Cook','Driver','Cleaner','Client contact'];
+const ROLE_COLOR = { 'Coordinator':'#C1272D','Lead Planner':'#0B0B0B','Server':'#2D5BA8','Bartender':'#7A3FB0','Sommelier':'#8E1C21','Attendant':'#1F7A4D','Cook':'#B26A00','Driver':'#4A4A4A','Cleaner':'#2F7F86','Client contact':'#C97A00' };
+const STALE_MS = 2*60*1000;          // a position older than this is shown as "last seen"
+const DEFAULT_ZONES = ['Entrance','Main room','Bar','Kitchen','Patio'];
+const LS_SETUP = 'fmt.setup.v1';
+
+/* ============================ Utilities ============================ */
+const $ = (s, el=document) => el.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid = () => Math.random().toString(36).slice(2, 8);
+const initials = n => (n||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase();
+const b64e = o => btoa(unescape(encodeURIComponent(JSON.stringify(o)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const b64d = s => JSON.parse(decodeURIComponent(escape(atob(s.replace(/-/g,'+').replace(/_/g,'/')))));
+const lsGet = k => { try { return JSON.parse(localStorage.getItem(k)); } catch(e){ return null; } };
+const lsSet = (k,v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} };
+const digits = p => (p||'').replace(/[^\d]/g,'');
+function haversine(a, b){
+  const R=6371000, t=x=>x*Math.PI/180;
+  const dLat=t(b.lat-a.lat), dLng=t(b.lng-a.lng);
+  const h=Math.sin(dLat/2)**2+Math.cos(t(a.lat))*Math.cos(t(b.lat))*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+function bearing(a, b){
+  const t=x=>x*Math.PI/180, d=x=>x*180/Math.PI;
+  const y=Math.sin(t(b.lng-a.lng))*Math.cos(t(b.lat));
+  const x=Math.cos(t(a.lat))*Math.sin(t(b.lat))-Math.sin(t(a.lat))*Math.cos(t(b.lat))*Math.cos(t(b.lng-a.lng));
+  return (d(Math.atan2(y,x))+360)%360;
+}
+const fmtDist = m => m==null ? '—' : m < 1000 ? `${Math.round(m)} m` : `${(m/1000).toFixed(1)} km`;
+const ago = ts => { const s=Math.round((Date.now()-ts)/1000); return s<60?`${s}s ago`:`${Math.round(s/60)} min ago`; };
+function toast(msg){ const el=document.createElement('div'); el.textContent=msg; el.setAttribute('role','status');
+  Object.assign(el.style,{position:'fixed',left:'50%',bottom:'24px',transform:'translateX(-50%)',background:'var(--ink)',color:'var(--paper)',padding:'10px 14px',borderRadius:'10px',zIndex:2000,fontWeight:600,maxWidth:'90vw'});
+  document.body.appendChild(el); setTimeout(()=>el.remove(),2200); }
+
+/* ============================ Messaging ============================ */
+// Group: the event's WhatsApp group invite link (https://chat.whatsapp.com/...).
+// One-to-one: wa.me/<international number without +>.
+function msgLink(person, event){
+  if (person && digits(person.phone)) return `https://wa.me/${digits(person.phone)}`;
+  return event.group || '';
+}
+
+/* ============================ Sync adapter ============================ */
+/* Interface:
+     Sync.connect(eventId, onPositions)   onPositions(map of personId -> position)
+     Sync.publish(personId, position|null)  null = stopped sharing (checked out)
+   position = { lat, lng, acc, zone, ts, on:true }
+   V1: same-device adapter (tabs/windows of one browser). Replace with a realtime backend for production. */
+const Sync = (() => {
+  let ch=null, key='', cb=()=>{}, state={};
+  function emit(){ cb({...state}); }
+  return {
+    connect(eventId, onPositions){
+      key = `fmt.pos.${eventId}`; cb = onPositions; state = lsGet(key) || {};
+      try { ch = new BroadcastChannel(key); ch.onmessage = e => { const {id,pos}=e.data; if(pos) state[id]=pos; else delete state[id]; emit(); }; } catch(e){}
+      window.addEventListener('storage', e => { if(e.key===key){ state = lsGet(key)||{}; emit(); } });
+      emit();
+    },
+    publish(id, pos){
+      if (pos) state[id]=pos; else delete state[id];
+      lsSet(key, state); try { ch && ch.postMessage({id,pos}); } catch(e){}
+      emit();
+    }
+  };
+})();
+
+/* ============================ State ============================ */
+let EVENT = null;        // { id, name, venue, group, zones[], people[{id,name,role,phone}] }
+let ME = null;           // person id, or 'host' for the coordinator's setup screen
+let POS = {};            // live positions from Sync
+let myPos = null;        // my latest fix
+let watchId = null, heading = null, findTarget = null, simTimer = null;
+let map = null, markers = {}, fitted = false;
+
+/* ============================ Routing ============================ */
+function parseHash(){
+  const h = new URLSearchParams(location.hash.slice(1));
+  const e = h.get('e'); const me = h.get('me');
+  if (e){ try { EVENT = b64d(e); } catch(err){ EVENT = null; } }
+  ME = me || null;
+}
+function linkFor(personId){
+  const base = location.href.split('#')[0];
+  return `${base}#e=${b64e(EVENT)}${personId?`&me=${personId}`:''}`;
+}
+
+/* ============================ Setup (coordinator) ============================ */
+function newEvent(){
+  return { id: uid()+uid(), name:'', venue:'', group:'', zones:[...DEFAULT_ZONES], people:[] };
+}
+function renderSetup(){
+  $('#hdrRole').textContent = 'Setup';
+  $('#hdrEvent').textContent = 'Culinary Express';
+  const ev = EVENT;
+  const roleOpts = ROLES.map(r=>`<option>${esc(r)}</option>`).join('');
+  $('#app').innerHTML = `
+  <div class="wrap">
+    <h1>Set up the event</h1>
+    <p class="lead">Add yourself and the team. Everyone gets a personal link. On event day, staff check in to share their location, and the client can find them by name and role.</p>
+
+    <h2>Event</h2>
+    <label for="evName">Event name</label>
+    <input id="evName" type="text" placeholder="Hart wedding · Saturday" value="${esc(ev.name)}">
+    <label for="evVenue">Venue</label>
+    <input id="evVenue" type="text" placeholder="The Foundry, 120 Main St" value="${esc(ev.venue)}">
+    <label for="evGroup">WhatsApp group link</label>
+    <input id="evGroup" type="url" inputmode="url" placeholder="https://chat.whatsapp.com/…" value="${esc(ev.group)}">
+    <div class="hint">The group created while the dispatch was built. In WhatsApp: group info → Invite via link → Copy.</div>
+
+    <h2>Venue zones</h2>
+    <div class="chips" id="zones">${ev.zones.map((z,i)=>`<span class="chip">${esc(z)}<button aria-label="Remove ${esc(z)}" data-rmzone="${i}">×</button></span>`).join('')}</div>
+    <div class="row2" style="margin-top:10px">
+      <input id="zoneNew" type="text" placeholder="Add a zone, e.g. Coat check" aria-label="New zone">
+      <button class="btn ghost" id="zoneAdd" style="flex:0 0 auto">Add zone</button>
+    </div>
+    <div class="hint">Zones help indoors, where phone GPS can be 10–30 m off.</div>
+
+    <h2>Team</h2>
+    <div class="list" id="people">${ev.people.length? ev.people.map(p=>`
+      <div class="card person">
+        <div class="av" style="background:${ROLE_COLOR[p.role]||'#0B0B0B'}">${esc(initials(p.name))}</div>
+        <div><div class="pname">${esc(p.name)}</div><div class="pmeta">${esc(p.role)}${p.phone?` · ${esc(p.phone)}`:''}</div></div>
+        <button class="btn sm ghost" data-rmperson="${p.id}" aria-label="Remove ${esc(p.name)}">Remove</button>
+      </div>`).join('') : `<div class="empty">No one yet. Start by adding yourself as Coordinator.</div>`}
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="row2">
+        <div><label for="pName" style="margin-top:0">Name</label><input id="pName" type="text" placeholder="Maria Lopez"></div>
+        <div><label for="pRole" style="margin-top:0">Role</label><select id="pRole">${roleOpts}</select></div>
+      </div>
+      <label for="pPhone">WhatsApp number <span style="font-weight:400;color:var(--muted)">(optional, with country code)</span></label>
+      <input id="pPhone" type="tel" inputmode="tel" placeholder="+1 415 555 0134">
+      <div class="row2" style="margin-top:12px"><button class="btn dark" id="pAdd">Add to team</button></div>
+    </div>
+
+    <h2>Links</h2>
+    <div class="card" id="links">${ev.people.length ? ev.people.map(p=>`
+      <div class="shareurl">
+        <div class="who">${esc(p.name)}<small>${esc(p.role)}</small></div>
+        <div class="row2" style="flex-wrap:nowrap">
+          <button class="btn sm ghost" data-copy="${p.id}">Copy link</button>
+          <button class="btn sm" data-open="${p.id}">Open</button>
+        </div>
+      </div>`).join('') : `<div class="empty">Links appear here once you add people.</div>`}
+    </div>
+    <div class="hint">Send each person their own link. The link carries the event setup, so add everyone before sending. If the team changes, send the new links.</div>
+
+    <footer>Find my team · V1 · 21 Oct 2026</footer>
+  </div>`;
+
+  const save = () => { lsSet(LS_SETUP, EVENT); };
+  ['evName','evVenue','evGroup'].forEach(id => $('#'+id).addEventListener('input', e => {
+    const k = {evName:'name',evVenue:'venue',evGroup:'group'}[id]; EVENT[k] = e.target.value.trim(); save();
+  }));
+  $('#zoneAdd').onclick = () => { const v=$('#zoneNew').value.trim(); if(!v) return; EVENT.zones.push(v); save(); renderSetup(); $('#zoneNew').focus(); };
+  $('#zoneNew').onkeydown = e => { if(e.key==='Enter') $('#zoneAdd').click(); };
+  $('#zones').onclick = e => { const i=e.target.dataset.rmzone; if(i==null) return; EVENT.zones.splice(+i,1); save(); renderSetup(); };
+  $('#pAdd').onclick = () => {
+    const name=$('#pName').value.trim(); if(!name){ $('#pName').focus(); toast('Add a name'); return; }
+    EVENT.people.push({ id: uid(), name, role: $('#pRole').value, phone: $('#pPhone').value.trim() });
+    save(); renderSetup(); $('#pName').focus();
+  };
+  $('#people').onclick = e => { const id=e.target.dataset.rmperson; if(!id) return; EVENT.people = EVENT.people.filter(p=>p.id!==id); save(); renderSetup(); };
+  $('#links').onclick = async e => {
+    if (e.target.dataset.open){ location.hash = linkFor(e.target.dataset.open).split('#')[1]; return; }
+    const id=e.target.dataset.copy; if(!id) return;
+    const url = linkFor(id);
+    try { await navigator.clipboard.writeText(url); toast('Link copied'); }
+    catch(err){ prompt('Copy this link', url); }
+  };
+}
+
+/* ============================ Live view ============================ */
+function person(id){ return EVENT.people.find(p=>p.id===id); }
+function isOn(pos){ return pos && pos.on && (Date.now()-pos.ts) < STALE_MS*15; }
+
+function renderLive(){
+  const me = person(ME);
+  if (!me){ $('#app').innerHTML = `<div class="wrap"><h1>Link not recognised</h1><p class="lead">Ask your coordinator to send your personal link again.</p></div>`; return; }
+  $('#hdrRole').textContent = me.role;
+  $('#hdrEvent').textContent = EVENT.name || 'Event';
+  const isClient = me.role === 'Client contact';
+  $('#app').innerHTML = `
+    <div id="map" role="region" aria-label="Map of the team"></div>
+    <div class="wrap">
+      <div class="card me" style="margin-top:16px">
+        <div class="status">
+          <div><div class="pname">${esc(me.name)}</div><div class="pmeta">${esc(me.role)}${EVENT.venue?` · ${esc(EVENT.venue)}`:''}</div></div>
+          <span class="pill off" id="shareState">Not sharing</span>
+        </div>
+        <div class="row2">
+          <button class="btn primary" id="checkBtn">${isClient?'Share my location':'Check in'}</button>
+          ${EVENT.group?`<a class="btn wa" href="${esc(EVENT.group)}" target="_blank" rel="noopener">Team chat</a>`:''}
+        </div>
+        <div>
+          <label for="zoneSel" style="margin-top:0">I'm at</label>
+          <select id="zoneSel"><option value="">Choose a zone (optional)</option>${EVENT.zones.map(z=>`<option>${esc(z)}</option>`).join('')}</select>
+        </div>
+        <div class="hint" id="gpsLine">${isClient?'Share your location so the team can find you. It stops when you tap Stop sharing.':'Your location is shared only between check-in and check-out.'}</div>
+      </div>
+
+      <h2>${isClient?'Your team':'Team'}</h2>
+      <div class="list" id="team"></div>
+
+      <div class="row2" style="margin-top:20px">
+        <button class="btn ghost sm" id="simBtn">Simulate team (demo)</button>
+      </div>
+      <footer>Find my team · V1 · ${esc(EVENT.name||'')} </footer>
+    </div>`;
+
+  initMap();
+  restoreSharing();
+  $('#checkBtn').onclick = toggleSharing;
+  $('#zoneSel').onchange = () => { if (myPos) publishMine(); };
+  $('#simBtn').onclick = toggleSim;
+  $('#team').onclick = e => { const id=e.target.closest('[data-find]')?.dataset.find; if(id) openFind(id); };
+  Sync.connect(EVENT.id, p => { POS = p; drawTeam(); drawMarkers(); updateFind(); });
+}
+
+function teamOrder(a, b){
+  // Client sees coordinator first; everyone sees people on shift first, nearest first.
+  const pa=POS[a.id], pb=POS[b.id];
+  const ca = a.role==='Coordinator'?0:1, cb = b.role==='Coordinator'?0:1;
+  if (ca!==cb) return ca-cb;
+  const oa = isOn(pa)?0:1, ob = isOn(pb)?0:1; if (oa!==ob) return oa-ob;
+  if (myPos && pa && pb) return haversine(myPos,pa)-haversine(myPos,pb);
+  return a.name.localeCompare(b.name);
+}
+function drawTeam(){
+  const el = $('#team'); if(!el) return;
+  const others = EVENT.people.filter(p=>p.id!==ME).sort(teamOrder);
+  if (!others.length){ el.innerHTML = `<div class="empty">No one else on this event yet.</div>`; return; }
+  const anyOn = others.some(p=>isOn(POS[p.id]));
+  const tip = (!myPos && anyOn) ? `<div class="notice">Turn on your location to see how far away each person is.</div>` : '';
+  el.innerHTML = tip + others.map(p => {
+    const pos = POS[p.id]; const on = isOn(pos);
+    const d = (on && myPos) ? haversine(myPos,pos) : null;
+    const brg = (on && myPos) ? bearing(myPos,pos) : null;
+    const rot = brg==null ? 0 : (heading!=null ? brg-heading : brg);
+    const stale = on && (Date.now()-pos.ts) > STALE_MS;
+    const status = !on ? `<span class="dot"></span>Not checked in` :
+      `<span class="dot on"></span>${pos.zone?esc(pos.zone):'On site'}${stale?` · last seen ${ago(pos.ts)}`:''}`;
+    const msg = msgLink(p, EVENT);
+    return `<div class="card person">
+      <div class="av ${on?'':'off'}" style="background:${ROLE_COLOR[p.role]||'#0B0B0B'}">${esc(initials(p.name))}</div>
+      <div><div class="pname">${esc(p.name)}</div><div class="pmeta">${esc(p.role)} · ${status}</div></div>
+      <div class="dist">${d!=null?`<span class="arrow" style="transform:rotate(${rot}deg)" aria-hidden="true">↑</span> ${fmtDist(d)}<small>±${Math.round(pos.acc||0)} m</small>`:''}</div>
+      <div class="pact">
+        <button class="btn sm dark" data-find="${p.id}" ${on?'':'disabled'} aria-label="Find ${esc(p.name)}">Find</button>
+        ${msg?`<a class="btn sm wa" href="${esc(msg)}" target="_blank" rel="noopener" aria-label="${digits(p.phone)?`Message ${esc(p.name)} on WhatsApp`:'Open the team WhatsApp group'}">${digits(p.phone)?'Message':'Team chat'}</a>`:`<button class="btn sm ghost" disabled>No WhatsApp</button>`}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ---------- Map ---------- */
+function initMap(){
+  if (typeof L === 'undefined'){ $('#map').style.height='auto'; $('#map').style.minHeight='0'; $('#map').innerHTML = `<div class="wrap"><p class="notice">Map could not load. Distances and directions still work.</p></div>`; return; }
+  map = L.map('map', { zoomControl:true, attributionControl:true }).setView([37.7749,-122.4194], 16);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, maxNativeZoom:19, attribution:'© OpenStreetMap' }).addTo(map);
+  markers = {}; fitted = false;
+}
+function iconFor(p, isMe){
+  return L.divIcon({ className:'', iconSize:[34,34], iconAnchor:[17,17],
+    html:`<div class="mk ${isMe?'me':''}" style="${isMe?'':`background:${ROLE_COLOR[p.role]||'#0B0B0B'}`}">${esc(initials(p.name))}</div>` });
+}
+function drawMarkers(){
+  if (!map) return;
+  const live = {};
+  EVENT.people.forEach(p => {
+    const pos = p.id===ME ? (myPos && {...myPos, on:true}) : POS[p.id];
+    if (!pos || !isOn(pos)) return;
+    live[p.id] = true;
+    const ll = [pos.lat,pos.lng];
+    if (!markers[p.id]){
+      markers[p.id] = L.marker(ll, { icon: iconFor(p, p.id===ME), title: `${p.name}, ${p.role}`, keyboard:true }).addTo(map)
+        .bindPopup(`<b>${esc(p.name)}</b><br>${esc(p.role)}${pos.zone?` · ${esc(pos.zone)}`:''}`);
+      if (p.id!==ME) markers[p.id].on('click', () => openFind(p.id));
+    } else markers[p.id].setLatLng(ll);
+  });
+  Object.keys(markers).forEach(id => { if(!live[id]){ map.removeLayer(markers[id]); delete markers[id]; } });
+  const pts = Object.keys(live).map(id => markers[id].getLatLng());
+  if (!fitted && pts.length){ pts.length===1 ? map.setView(pts[0],18) : map.fitBounds(L.latLngBounds(pts).pad(0.3)); fitted = true; }
+}
+
+/* ---------- Sharing ---------- */
+const SHARE_KEY = () => `fmt.sharing.${EVENT.id}.${ME}`;
+function restoreSharing(){ if (lsGet(SHARE_KEY())) startSharing(true); else setShareUI(false); }
+function toggleSharing(){ watchId!=null ? stopSharing() : startSharing(false); }
+function setShareUI(on, msg){
+  const isClient = person(ME).role === 'Client contact';
+  const st = $('#shareState'), btn = $('#checkBtn');
+  if (!st) return;
+  st.className = 'pill ' + (on ? 'on' : (msg ? 'warn' : 'off'));
+  st.textContent = on ? 'Sharing' : (msg ? 'Location off' : 'Not sharing');
+  btn.textContent = on ? (isClient?'Stop sharing':'Check out') : (isClient?'Share my location':'Check in');
+  btn.className = 'btn ' + (on ? 'dark' : 'primary');
+  if (msg) $('#gpsLine').textContent = msg;
+}
+function startSharing(silent){
+  if (!('geolocation' in navigator)){ setShareUI(false, 'This browser cannot share location.'); return; }
+  watchId = navigator.geolocation.watchPosition(p => {
+    myPos = { lat:p.coords.latitude, lng:p.coords.longitude, acc:p.coords.accuracy, ts:Date.now() };
+    if (p.coords.heading!=null && !isNaN(p.coords.heading) && p.coords.speed>0.6 && heading==null) heading = p.coords.heading;
+    publishMine(); setShareUI(true);
+    $('#gpsLine').textContent = `GPS ±${Math.round(myPos.acc)} m · updated just now`;
+  }, err => {
+    stopSharing(true);
+    setShareUI(false, err.code===1 ? 'Location permission was denied. Allow location for this site in your browser settings, then try again.' : 'Could not get your location. Move near a window or outdoors and try again.');
+  }, { enableHighAccuracy:true, maximumAge:5000, timeout:20000 });
+  lsSet(SHARE_KEY(), true);
+  if (!silent) toast(person(ME).role==='Client contact' ? 'Sharing your location with the team' : 'Checked in · sharing location');
+  setShareUI(true);
+  $('#gpsLine').textContent = 'Finding your location…';
+}
+function stopSharing(quiet){
+  if (watchId!=null) navigator.geolocation.clearWatch(watchId);
+  watchId = null; myPos = null;
+  Sync.publish(ME, null); lsSet(SHARE_KEY(), false);
+  setShareUI(false);
+  if (!quiet){ toast(person(ME).role==='Client contact' ? 'Stopped sharing' : 'Checked out · location off');
+    $('#gpsLine').textContent = 'Your location is not being shared.'; }
+  drawTeam(); drawMarkers();
+}
+function publishMine(){
+  if (!myPos) return;
+  Sync.publish(ME, { ...myPos, zone: $('#zoneSel')?.value || '', on:true, ts: Date.now() });
+}
+
+/* ---------- Compass ---------- */
+function onOrient(e){
+  let h = null;
+  if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;
+  else if (e.absolute && typeof e.alpha === 'number') h = (360 - e.alpha) % 360;
+  if (h!=null){ heading = h; updateFind(); }
+}
+function enableCompass(){
+  const add = () => { window.addEventListener('deviceorientationabsolute', onOrient, true); window.addEventListener('deviceorientation', onOrient, true); };
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
+    DeviceOrientationEvent.requestPermission().then(s => { if (s==='granted'){ add(); $('#fCompass').hidden = true; } else toast('Compass not allowed'); }).catch(()=>toast('Compass not available'));
+  } else { add(); $('#fCompass').hidden = true; }
+}
+
+/* ---------- Find ---------- */
+function openFind(id){
+  findTarget = id; $('#find').classList.add('open');
+  const needsPerm = typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function';
+  $('#fCompass').hidden = !needsPerm || heading!=null;
+  if (!needsPerm) enableCompass();
+  if (watchId==null) startSharing(true);   // you need your own position to be guided; it is shared while open
+  updateFind(); $('#fClose').focus();
+}
+function closeFind(){ findTarget = null; $('#find').classList.remove('open'); }
+function updateFind(){
+  if (!findTarget) return;
+  const p = person(findTarget), pos = POS[findTarget];
+  $('#fWho').textContent = `${p.name} · ${p.role}`;
+  $('#fZone').textContent = pos && pos.zone ? `At: ${pos.zone}` : '';
+  const msg = msgLink(p, EVENT);
+  $('#fMsg').href = msg || '#'; $('#fMsg').style.display = msg ? '' : 'none';
+  $('#fMsg').textContent = digits(p.phone) ? `Message ${p.name.split(' ')[0]}` : 'Team chat';
+  if (!pos || !isOn(pos)){ $('#fDist').textContent='—'; $('#fNote').textContent=`${p.name} isn't sharing location right now.`; $('#fMaps').removeAttribute('href'); return; }
+  $('#fMaps').href = `https://www.google.com/maps/dir/?api=1&travelmode=walking&destination=${pos.lat},${pos.lng}`;
+  if (!myPos){ $('#fDist').textContent='…'; $('#fNote').textContent='Getting your location…'; return; }
+  const d = haversine(myPos,pos), brg = bearing(myPos,pos);
+  const rot = heading!=null ? brg - heading : brg;
+  $('#needle svg').style.transform = `rotate(${rot}deg)`;
+  $('#fDist').textContent = fmtDist(d);
+  const acc = Math.round((myPos.acc||0)+(pos.acc||0));
+  const close = d <= Math.max(15, acc);
+  $('#fNote').textContent = close
+    ? `You're within GPS range (±${acc} m).${pos.zone?` Look for them at ${pos.zone}.`:''} Use Message if you can't spot them.`
+    : heading!=null ? `Point the top of your phone where the arrow points. Accuracy ±${acc} m.`
+                    : `Arrow points relative to north. Turn on the compass for a live pointer. Accuracy ±${acc} m.`;
+  if ((Date.now()-pos.ts) > STALE_MS) $('#fNote').textContent += ` Last update ${ago(pos.ts)}.`;
+}
+$('#fClose').onclick = closeFind;
+$('#fCompass').onclick = enableCompass;
+document.addEventListener('keydown', e => { if (e.key==='Escape' && findTarget) closeFind(); });
+
+/* ---------- Demo simulation ---------- */
+function toggleSim(){
+  if (simTimer){ clearInterval(simTimer); simTimer=null; EVENT.people.forEach(p=>{ if(p.id!==ME) Sync.publish(p.id,null); }); $('#simBtn').textContent='Simulate team (demo)'; return; }
+  const c = myPos || (map ? map.getCenter() : {lat:37.7749,lng:-122.4194});
+  const sims = {};
+  EVENT.people.forEach((p,i) => { if (p.id===ME) return;
+    const a = (i/EVENT.people.length)*Math.PI*2, r = 0.0003 + Math.random()*0.0005;
+    sims[p.id] = { lat:c.lat+Math.sin(a)*r, lng:c.lng+Math.cos(a)*r*1.3 }; });
+  const tick = () => Object.entries(sims).forEach(([id,s]) => {
+    s.lat += (Math.random()-.5)*0.00004; s.lng += (Math.random()-.5)*0.00005;
+    Sync.publish(id, { lat:s.lat, lng:s.lng, acc: 6+Math.random()*10, zone: EVENT.zones[Math.floor(Math.abs(Math.sin(s.lat*1e5))*EVENT.zones.length)]||'', on:true, ts:Date.now() });
+  });
+  tick(); simTimer = setInterval(tick, 3000);
+  $('#simBtn').textContent = 'Stop simulation';
+  toast('Demo: team placed around you');
+}
+
+/* ============================ Boot ============================ */
+function boot(){
+  parseHash();
+  if (EVENT && ME){ renderLive(); return; }
+  EVENT = EVENT || lsGet(LS_SETUP) || newEvent();
+  if (!EVENT.zones) EVENT.zones = [...DEFAULT_ZONES];
+  renderSetup();
+}
+window.addEventListener('hashchange', () => { if (watchId!=null) stopSharing(true); if (simTimer){ clearInterval(simTimer); simTimer=null; } closeFind(); map && map.remove(); map=null; boot(); });
+setInterval(() => { if (EVENT && ME) drawTeam(); }, 15000);  // refresh "last seen" labels
+boot();
+</script>
+</body>
+</html>
