@@ -164,7 +164,7 @@ ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabula
     <button id="followBtn" class="ghost" type="button">Follow: on</button>
     <button id="clearBtn" class="ghost" type="button">Clear trail</button>
   </div>
-  <p class="version" id="version">Walk Tracker · version 21 Oct 2026 · 10:40</p>
+  <p class="version" id="version">Walk Tracker · version 22 Oct 2026 · Find my team</p>
   <details id="stepsBox" open>
     <summary id="stepsSum">Directions</summary>
     <ol class="steps" id="steps"><li><span class="i">ⓘ</span><span>Start tracking to get directions from where you are.</span><span></span></li></ol>
@@ -175,7 +175,7 @@ ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabula
 <script>
 // Default destination: CVS, 2000 Pennsylvania Ave NW, Washington DC
 let dest = { lat: 38.9002258, lng: -77.046458, name: "CVS, 2000 Pennsylvania Ave NW" };
-const APP_VERSION = "21 Oct 2026 · 10:40";
+const APP_VERSION = "22 Oct 2026 · Find my team";
 const SPEED = { foot: 1.35, bike: 4.5, car: 9 };          // fallback m/s for "time" when no route
 const STEP_AHEAD = { foot: 5, bike: 10, car: 20 };         // m before a turn when it becomes the current step
 const OFF_ROUTE = { foot: 40, bike: 50, car: 70 };         // m from the line before rerouting
@@ -1373,5 +1373,7 @@ $("findBtn").onclick = () => {
 };
 initFindMatt();
 </script>
+<!-- Find my team: a separate module that adds the Find Matt / Find my team switch -->
+<script src="find-my-team.js"></script>
 </body>
 </html>
