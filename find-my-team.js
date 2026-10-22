@@ -129,6 +129,7 @@ const sw = el("div", { class: "modes two", role: "group", "aria-label": "Find" }
   el("button", { type: "button", "data-find": "matt", onclick: () => setMode("matt") }, "📍 Find Matt"),
   el("button", { type: "button", "data-find": "team", onclick: () => setMode("team") }, "👥 Find my team"));
 const card = el("div", { class: "card", id: "ftCard", "aria-live": "polite" });
+const setCard = (...kids) => card.replaceChildren(...kids.filter(k => k != null && k !== false));
 $("findBtn").before(sw);
 $("mattCard").after(card);
 
@@ -237,6 +238,7 @@ function join(cfg, pid) {
   if (ev?.id === cfg.id && (ev.rv || 0) > (cfg.rv || 0)) cfg = { ...ev };   // keep a newer roster we already have
   ev = cfg; meId = pid; jset("ftEvent", ev); store("ftMe", pid);
   view = "live"; connect(); setMode("team");
+  startJoinListener();
 }
 function leave(removed) {
   if (on) checkOut();
@@ -247,6 +249,15 @@ function leave(removed) {
   render();
 }
 function handleTeamLink() {
+  const j = location.hash.match(/^#teamjoin=([\w-]+)$/);
+  if (j) {
+    history.replaceState(null, "", location.pathname + location.search);
+    let info; try { info = decCfg(j[1]); } catch (_) { info = null; }
+    if (!info?.id || !info.jpub) return notice("Couldn't open this event link", "Ask the coordinator to send the event link again.");
+    if (ev?.id === info.id && me()) { setMode("team"); return notice("You're already on this team", "You're in as " + me().name + "."); }
+    if (asking?.info?.id === info.id && asking.state === "waiting") { view = "join"; return setMode("team"); }
+    asking = { info, state: "form" }; view = "join"; return setMode("team");
+  }
   const m = location.hash.match(/^#team=([\w-]+)\.([\w-]+)$/);
   if (!m) return;
   history.replaceState(null, "", location.pathname + location.search);
@@ -260,10 +271,14 @@ addEventListener("hashchange", handleTeamLink);
 // Team updates are signed by the coordinator's phone. Its private key never leaves that phone;
 // the public key rides in every link, so other phones accept changes only from the coordinator.
 async function ensureSigner(d) {
-  if (d.cpub && load("ftSign:" + d.id)) return;
+  if (d.cpub && d.jpub && load("ftSign:" + d.id) && load("ftJoinKey:" + d.id)) return;
   const kp = await crypto.subtle.generateKey(ECDSA, true, ["sign", "verify"]);
   store("ftSign:" + d.id, JSON.stringify(await crypto.subtle.exportKey("jwk", kp.privateKey)));
-  d.cpub = b64u.enc(await crypto.subtle.exportKey("raw", kp.publicKey)); saveDraft();
+  d.cpub = b64u.enc(await crypto.subtle.exportKey("raw", kp.publicKey));
+  // A second key pair for join requests: people asking to join encrypt their details to it
+  const jk = await crypto.subtle.generateKey(ECDH, true, ["deriveKey"]);
+  store("ftJoinKey:" + d.id, JSON.stringify(await crypto.subtle.exportKey("jwk", jk.privateKey)));
+  d.jpub = b64u.enc(await crypto.subtle.exportKey("raw", jk.publicKey)); saveDraft();
 }
 async function signCfg(id, cfg) {
   const jwk = JSON.parse(load("ftSign:" + id) || "null"); if (!jwk) return null;
@@ -280,24 +295,165 @@ function saveDraft() { jset("ftDraft", draft); }
 async function publishDraft() {
   await ensureSigner(draft);
   draft.rv = Date.now(); saveDraft();
-  if (ev?.id === draft.id) {                     // live event on this phone: push the new roster to everyone
-    ev = { ...draft }; jset("ftEvent", ev);
-    const { k, ...cfg } = draft;                  // the event key never travels through the relay
-    await post({ t: "roster", cfg, sig: await signCfg(draft.id, cfg) });
-    if (!me()) leave(true);
+  const { k, ...cfg } = draft;                    // the event key never travels through the relay
+  const msg = { t: "roster", cfg, sig: await signCfg(draft.id, cfg) };
+  if (ev?.id === draft.id) { ev = { ...draft }; jset("ftEvent", ev); }
+  try {                                           // push the new team to every phone on the event
+    const dk = await crypto.subtle.importKey("raw", b64u.dec(draft.k), { name: "AES-GCM" }, false, ["encrypt"]);
+    await relayPost(FT.prefix + draft.id, await seal(dk, msg));
+  } catch (_) {}
+  if (ev?.id === draft.id && !me()) leave(true);
+  startJoinListener();
+}
+
+/* ---------- self-join with coordinator approval ----------
+   The coordinator shares one event join link. It carries the event details and the coordinator's
+   public join key, but not the event key, so it shows nobody's location. The person asking types
+   their name; the request is encrypted to the coordinator's phone. Approve adds them to the team
+   and sends their personal access back, encrypted so only their phone can read it. */
+const joinTopic = id => FT.prefix + id + "-join";
+const replyTopic = (id, rid) => FT.prefix + id + "-j-" + rid;
+const JOIN_TTL = 12 * 3600000;
+const joinLinkFor = d => location.origin + location.pathname + "#teamjoin=" +
+  encCfg({ id: d.id, name: d.name, venue: d.venue, date: d.date, start: d.start, end: d.end, jpub: d.jpub });
+
+// --- the person asking ---
+let asking = jget("ftJoinPending");     // { info, rid, jwk, name, role, phone, at, state }
+let askEs = null;
+async function resumeAsk() {
+  askEs?.close(); askEs = null;
+  if (!asking || asking.state !== "waiting") return;
+  if (Date.now() - asking.at > JOIN_TTL) { asking.state = "timeout"; jset("ftJoinPending", asking); return render(); }
+  try {
+    const priv = await crypto.subtle.importKey("jwk", { ...asking.jwk, key_ops: ["deriveKey"] }, ECDH, false, ["deriveKey"]);
+    const k = await aesKey(priv, asking.info.jpub);
+    const rid = asking.rid;
+    askEs = relayListen(replyTopic(asking.info.id, rid), async m => {
+      if (m.event !== "message" || asking?.rid !== rid) return;
+      let r; try { r = JSON.parse(m.message); } catch (_) { return; }
+      if (r.t === "deny") { asking.state = "denied"; jset("ftJoinPending", asking); askEs?.close(); return render(); }
+      if (r.t !== "enc") return;
+      let ok; try { ok = await unseal(k, r); } catch (_) { return; }        // only the coordinator can write this
+      if (ok.t !== "ok" || !ok.cfg?.k || !ok.cfg.people?.some(p => p.id === ok.pid)) return;
+      askEs?.close(); asking = null; jset("ftJoinPending", null);
+      if (navigator.vibrate) navigator.vibrate([150, 80, 150]);
+      join(ok.cfg, ok.pid);
+      notice("You're in", `The coordinator approved you for ${ok.cfg.name || "the event"}. Tap ${me()?.role === "Client contact" ? "Share my location" : "Check in"} when you arrive so the team can find you.`);
+    }, "12h");
+  } catch (_) { asking.state = "error"; jset("ftJoinPending", asking); render(); }
+}
+async function sendAsk(info, name, role, phone) {
+  asking = { info, name, role, phone, state: "sending" }; render();
+  try {
+    const kp = await crypto.subtle.generateKey(ECDH, true, ["deriveKey"]);
+    const pub = b64u.enc(await crypto.subtle.exportKey("raw", kp.publicKey));
+    const k = await aesKey(kp.privateKey, info.jpub);
+    asking = { ...asking, rid: uid(), jwk: await crypto.subtle.exportKey("jwk", kp.privateKey), at: Date.now(), state: "waiting" };
+    jset("ftJoinPending", asking);
+    await resumeAsk();
+    const sealed = await seal(k, { name, role, phone });
+    await relayPost(joinTopic(info.id), { t: "join", rid: asking.rid, pub, iv: sealed.iv, ct: sealed.ct, at: asking.at });
+    render();
+  } catch (_) { if (asking) { asking.state = "error"; jset("ftJoinPending", asking); } render(); }
+}
+function cancelAsk() { askEs?.close(); askEs = null; asking = null; jset("ftJoinPending", null); view = "live"; render(); }
+function renderAsk() {
+  const a = asking, info = a.info;
+  const when = [fmtD(info.date), range(info.start, info.end)].filter(Boolean).join(" · ");
+  const head = [el("b", {}, "Join " + (info.name || "this event")), info.venue ? el("span", { class: "muted" }, info.venue) : null, when ? el("span", { class: "muted" }, when) : null];
+  const close = label => el("button", { type: "button", class: "ghost", onclick: cancelAsk }, label);
+  if (a.state === "form") {
+    const nameIn = el("input", { type: "text", placeholder: "Your name", "aria-label": "Your name", autocomplete: "name", maxlength: "40" });
+    const roleIn = el("select", { "aria-label": "You are" }, ...["Client contact", ...ROLES.filter(r => !["Client contact", "Lead Planner", "Coordinator"].includes(r))].map(r => el("option", {}, r)));
+    const phoneIn = el("input", { type: "tel", inputmode: "tel", placeholder: "WhatsApp number (optional)", "aria-label": "WhatsApp number", autocomplete: "tel", maxlength: "20" });
+    nameIn.value = load("fmName") || ""; phoneIn.value = load("fmPhone") || "";
+    const hint = el("span", { class: "hint", hidden: "" });
+    setTimeout(() => nameIn.focus(), 0);
+    return setCard(...head,
+      el("span", { class: "muted" }, "The coordinator gets your request and approves it. Then you can share your location so the team can find you, and find them."),
+      el("form", { class: "fmform", onsubmit: e => {
+          e.preventDefault();
+          const n = nameIn.value.trim(); if (!n) { hint.textContent = "Enter your name."; hint.hidden = false; return nameIn.focus(); }
+          store("fmName", n); if (phoneIn.value.trim()) store("fmPhone", phoneIn.value.trim());
+          sendAsk(info, n.slice(0, 40), roleIn.value, phoneIn.value.trim().slice(0, 20)); } },
+        nameIn, el("label", { class: "f" }, "I'm the", roleIn), phoneIn, hint,
+        el("button", { type: "submit" }, "Ask to join")),
+      close("Cancel"));
   }
+  const msg = { sending: ["Sending your request…", ""],
+    waiting: ["Waiting for the coordinator to approve…", "Keep this page open, or come back to it later; it picks up where you left off."],
+    denied: ["The coordinator declined your request.", "If that's a mistake, contact them directly."],
+    timeout: ["Your request expired.", "Open the event link again to send a new one."],
+    error: ["Couldn't send your request.", "Check your connection and open the event link again."] }[a.state];
+  setCard(...head, el("b", {}, msg[0]), msg[1] ? el("span", { class: "muted" }, msg[1]) : null,
+    close(a.state === "waiting" || a.state === "sending" ? "Cancel request" : "Close"));
+}
+
+// --- the coordinator's phone ---
+let joinEs = null, joinPriv = null, joinFor = null;
+const joinReqs = new Map();
+const doneKey = id => "ftJoinDone:" + id;
+const isDone = (id, rid) => (jget(doneKey(id)) || []).includes(rid);
+const markDone = (id, rid) => jset(doneKey(id), [...(jget(doneKey(id)) || []), rid].slice(-200));
+async function startJoinListener() {
+  if (!draft?.jpub || !draft.rv || joinFor === draft.id) return;
+  const jwk = jget("ftJoinKey:" + draft.id); if (!jwk) return;
+  try { joinPriv = await crypto.subtle.importKey("jwk", { ...jwk, key_ops: ["deriveKey"] }, ECDH, false, ["deriveKey"]); } catch (_) { return; }
+  joinEs?.close(); joinReqs.clear(); joinFor = draft.id;
+  const id = draft.id;
+  joinEs = relayListen(joinTopic(id), async m => {
+    if (m.event !== "message" || joinFor !== id) return;
+    let r; try { r = JSON.parse(m.message); } catch (_) { return; }
+    if (r.t !== "join" || !r.rid || !r.pub || joinReqs.has(r.rid) || isDone(id, r.rid) || Date.now() - (r.at || 0) > JOIN_TTL) return;
+    let k, who; try { k = await aesKey(joinPriv, r.pub); who = await unseal(k, r); } catch (_) { return; }
+    joinReqs.set(r.rid, { rid: r.rid, key: k, at: r.at, name: String(who.name || "Someone").slice(0, 40), role: ROLES.includes(who.role) ? who.role : "Client contact", phone: String(who.phone || "").slice(0, 20) });
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    setStatus(`${who.name || "Someone"} asked to join ${draft.name || "the team"}.`, "ok");
+    if (view !== "setup") render();
+  }, "12h");
+}
+async function approveJoin(rid, role) {
+  const r = joinReqs.get(rid); if (!r || !draft) return;
+  const p = { id: uid(6), name: r.name, role, phone: r.phone, start: draft.start || "", end: draft.end || "" };
+  draft.people.push(p); saveDraft();
+  await publishDraft();
+  try { await relayPost(replyTopic(draft.id, rid), await seal(r.key, { t: "ok", cfg: { ...draft }, pid: p.id })); } catch (_) {}
+  markDone(draft.id, rid); joinReqs.delete(rid);
+  setStatus(`${r.name} joined the team.`, "ok"); render();
+}
+async function denyJoin(rid) {
+  const r = joinReqs.get(rid); if (!r || !draft) return;
+  try { await relayPost(replyTopic(draft.id, rid), { t: "deny" }); } catch (_) {}
+  markDone(draft.id, rid); joinReqs.delete(rid); render();
+}
+function joinRequestsBlock() {
+  if (!joinReqs.size || draft?.id !== joinFor) return null;
+  return el("div", { class: "consent" }, el("div", { class: "sec" }, `Asking to join (${joinReqs.size})`),
+    ...[...joinReqs.values()].map(r => {
+      const roleSel = el("select", { "aria-label": `Role for ${r.name}` }, ...ROLES.map(x => el("option", {}, x)));
+      roleSel.value = r.role;
+      return el("div", { class: "tm" },
+        el("span", { class: "av", style: `background:${color(r.role)}` }, initials(r.name)),
+        el("div", {}, el("div", { class: "nm" }, r.name), el("span", { class: "muted" }, (r.phone ? r.phone + " · " : "") + "asked " + ago(r.at))),
+        el("span", {}),
+        el("div", { class: "acts" }, roleSel,
+          el("button", { type: "button", onclick: () => approveJoin(r.rid, roleSel.value) }, "Approve"),
+          el("button", { type: "button", class: "ghost", onclick: () => denyJoin(r.rid) }, "Deny")));
+    }));
 }
 
 /* ---------- rendering ---------- */
 function render() {
   if (mode !== "team") return;
   if (view === "setup") return renderSetup();
-  if (view === "links") return renderLinks();
-  if (!ev || !me()) return renderIntro();
-  renderLive();
+  if (view === "join" && asking) return renderAsk();
+  if (view === "links") renderLinks();
+  else if (!ev || !me()) renderIntro();
+  else renderLive();
+  const jr = joinRequestsBlock(); if (jr) card.prepend(jr);
 }
 function renderIntro() {
-  card.replaceChildren(
+  setCard(
     el("b", {}, "Find my team"),
     el("span", { class: "muted" }, "For events. The coordinator adds the team, sends each person their own link, and everyone who checks in can find each other on the map, with walking directions and a WhatsApp button."),
     el("button", { type: "button", onclick: () => { draft ??= newDraft(); view = "setup"; render(); } }, draft?.people.length ? "Continue setting up the team" : "Set up a team"),
@@ -324,7 +480,7 @@ function renderSetup() {
     d.people.push({ id: uid(6), name: n.slice(0, 40), role: roleIn.value, phone: phoneIn.value.trim().slice(0, 20), start: sIn.value || d.start || "", end: eIn.value || d.end || "" });
     saveDraft(); renderSetup(); card.querySelector("[aria-label='Name']")?.focus();
   };
-  card.replaceChildren(
+  setCard(
     el("b", {}, "Set up the team"),
     f("Event name", inp("name", "Hart wedding · Saturday")),
     f("Venue", inp("venue", "The Foundry, 1055 Thomas Jefferson St NW")),
@@ -363,7 +519,7 @@ function renderSetup() {
 function renderLinks() {
   const d = draft;
   const copy = async (url, btn) => {
-    try { await navigator.clipboard.writeText(url); btn.textContent = "Copied"; setTimeout(() => btn.textContent = "Copy", 1500); }
+    try { await navigator.clipboard.writeText(url); if (btn) { const t = btn.textContent; btn.textContent = "Copied"; setTimeout(() => btn.textContent = t, 1500); } }
     catch (_) { prompt("Copy this link", url); }
   };
   const share = async (p, url) => {
@@ -371,8 +527,12 @@ function renderLinks() {
     const text = `${p.name}, here's your link for ${d.name || "the event"}${d.venue ? " at " + d.venue : ""}${when ? " (" + when + ")" : ""}. Open it on your phone and tap Check in when you arrive.`;
     try { await navigator.share({ title: "Find my team", text, url }); } catch (_) { copy(url, null); }
   };
-  card.replaceChildren(
-    el("b", {}, "Send each person their link"),
+  setCard(
+    el("b", {}, "Event join link"),
+    el("span", { class: "muted" }, "Share one link with the client, or anyone else who should be on the team. They type their name and you approve them here. Keep this page open on your phone to see requests."),
+    (() => { const u = joinLinkFor(d); const b = el("button", { type: "button", class: "ghost", onclick: e => copy(u, e.currentTarget) }, "Copy join link");
+      return el("div", { class: "row" }, navigator.share ? el("button", { type: "button", onclick: () => navigator.share({ title: d.name || "Event", text: `Join ${d.name || "the event"} on Find my team${d.venue ? " at " + d.venue : ""}.`, url: u }).catch(() => {}) }, "Send join link") : null, b); })(),
+    el("b", {}, "Or send each person their own link"),
     el("span", { class: "muted" }, "Each link opens Walk Tracker as that person. If you change the team later, phones already on the event update automatically."),
     ...d.people.map(p => {
       const url = linkFor(d, p.id);
@@ -396,7 +556,7 @@ function renderLive() {
   const canEdit = draft?.id === ev.id && isCoord(m);       // the team, times and shifts are the coordinator's to change
   const evWhen = [fmtD(ev.date), range(ev.start, ev.end)].filter(Boolean).join(" · ");
   const myShift = range(m.start, m.end), myNote = shiftNote(ev, m);
-  card.replaceChildren(
+  setCard(
     el("div", { class: "row", style: "align-items:center;justify-content:space-between" },
       el("div", {}, el("b", {}, ev.name || "Event"), el("div", { class: "muted" }, ev.venue || ""), evWhen ? el("div", { class: "muted" }, evWhen) : null),
       el("span", { class: "pill " + (on ? "on" : "off") }, on ? "Sharing" : "Not sharing")),
@@ -459,6 +619,8 @@ if (ev && !me()) { ev = null; meId = null; jset("ftEvent", null); }
 setMode(mode);
 connect();
 if (ev && on && watchId == null) start();      // still checked in after a reload: pick tracking back up
+if (asking?.state === "waiting" && !ev) { view = "join"; resumeAsk(); render(); }
+startJoinListener();
 handleTeamLink();
 // A teammate stays the destination only while you're following them
 setInterval(() => { if (guide && !(dest.person && dest.name === person(guide)?.name)) { guide = null; liveRefresh(); } }, 3000);
