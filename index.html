@@ -1184,6 +1184,11 @@ function renderAdmin() {
   });
   const myIn = el("input", { id: "mattPhotoIn", type: "file", accept: "image/*" });
   const myHint = el("span", { class: "hint", hidden: "" });
+  const recoveryLink = location.origin + location.pathname + "#matt-key=" + load("fmMattKey");
+  const copyRecovery = async () => {
+    try { await navigator.clipboard.writeText(recoveryLink); setStatus("Private recovery link copied. Store it somewhere secure.", "ok"); }
+    catch (_) { notice("Couldn't copy the recovery link", "Open this admin screen in a browser that allows clipboard access, then try again."); }
+  };
   myIn.onchange = async () => {
     const f = myIn.files?.[0]; if (!f) return;
     try { mattPhoto = await blobToDataURL(await shrinkImage(f, 400, 0.8)); store("fmMattPhoto", mattPhoto); renderAdmin(); }
@@ -1200,6 +1205,10 @@ function renderAdmin() {
   box.replaceChildren(el("div", { class: "sheet wide" },
     el("h2", { id: "adminTitle" }, "Admin · People"),
     me_,
+    el("div", { class: "consent" },
+      el("b", {}, "Browser recovery"),
+      el("span", { class: "muted" }, "Keep this private link somewhere secure. If a notification opens in a different browser, paste it there to authorize that browser. Anyone with this link can manage Find Matt requests."),
+      el("button", { type: "button", class: "ghost", onclick: copyRecovery }, "Copy private recovery link")),
     el("span", { class: "muted" }, "Everyone you've accepted with Find Matt. Turn access off to stop someone finding you: it ends any share in progress and their new requests are declined without asking you."),
     ...(rows.length ? rows : [el("span", { class: "muted" }, "No one yet. People you accept will appear here.")]),
     el("span", { class: "muted" }, "This list is kept on this phone."),
@@ -1374,7 +1383,7 @@ async function loadMattKey(raw) {
 }
 async function initFindMatt() {
   const raw = load("fmMattKey");
-  if (raw) { try { await loadMattKey(raw); } catch (_) { mattKey = mattDh = null; } }
+  if (raw) { try { await loadMattKey(raw); } catch (_) { mattKey = mattDh = null; store("fmMattKey", null); } }
   if (mattKey) startMattMode();
   await handleLink();
 }
@@ -1389,7 +1398,50 @@ function startMattMode() {
     if (m.event === "message" && req) { try { addRequest(JSON.parse(td.decode(b64u.dec(req[1])))); } catch (_) {} }
   }, FM.answerMin + "m");
 }
-// Links into the app: the one-time setup link, and request links from notifications
+// Open a request after this browser has the coordinator key.
+async function openMattRequest(raw, accept) {
+  let req; try { req = JSON.parse(td.decode(b64u.dec(raw))); } catch (_) { req = null; }
+  const r = req ? await addRequest(req) : "bad";
+  if (r === "blocked") return notice("Access is off", "You've turned off this person's access, so the request was declined. Turn it back on in Admin · People to let them find you.");
+  if (r === "answered") return notice("Already answered", "You've already accepted or denied this request.");
+  if (r === "bad") return notice("Couldn't open this request", "The link is incomplete or wasn't sent from Find Matt.");
+  if (accept) approve(req.id);
+}
+// Notification apps often open a different browser from the one originally set up. Let the
+// coordinator authorize that browser locally, then continue the request that brought them here.
+function recoverMattBrowser(rawRequest, accept) {
+  const box = $("fmModal");
+  const input = el("input", { type: "text", autocomplete: "off", autocapitalize: "off", spellcheck: "false",
+    placeholder: "Paste your private setup link", "aria-label": "Private setup link" });
+  const hint = el("span", { class: "hint", hidden: "" });
+  const unlock = el("button", { type: "button" }, "Authorize this browser");
+  unlock.onclick = async () => {
+    const value = input.value.trim();
+    const match = value.match(/(?:^|[#?&])matt-key=([\w-]+)/);
+    const raw = match?.[1] || (/^[\w-]+$/.test(value) ? value : "");
+    if (!raw) { hint.textContent = "Paste the complete private setup link."; hint.hidden = false; return input.focus(); }
+    unlock.disabled = true; hint.hidden = true;
+    try {
+      await loadMattKey(raw);
+      store("fmMattKey", raw);
+      startMattMode();
+      await openMattRequest(rawRequest, accept);
+    } catch (_) {
+      unlock.disabled = false;
+      hint.textContent = "That setup link isn't valid. Copy the complete private link and try again.";
+      hint.hidden = false;
+    }
+  };
+  box.hidden = false;
+  box.replaceChildren(el("div", { class: "sheet" },
+    el("div", { class: "who", id: "fmModalTitle" }, "Authorize this browser"),
+    el("span", {}, "This request opened in a browser that hasn't been authorized yet."),
+    el("span", { class: "muted" }, "Paste your private setup link below. It is verified and saved only on this device; it is never sent to the message relay."),
+    input, hint, unlock,
+    el("button", { type: "button", class: "ghost", onclick: () => { box.hidden = true; box.replaceChildren(); } }, "Not now")));
+  setTimeout(() => input.focus(), 0);
+}
+// Links into the app: the private setup link, and request links from notifications.
 async function handleLink() {
   const h = location.hash;
   const keyIn = h.match(/^#matt-key=([\w-]+)/);
@@ -1398,18 +1450,12 @@ async function handleLink() {
   history.replaceState(null, "", location.pathname + location.search);
   if (keyIn) {
     try { await loadMattKey(keyIn[1]); store("fmMattKey", keyIn[1]); startMattMode();
-          notice("You're all set", "This phone is now Matt's phone. Find Matt requests will pop up here to accept or deny."); }
-    catch (_) { notice("Setup link didn't work", "Copy the whole setup link exactly as it was sent and open it again."); }
+          notice("You're all set", "This browser is now authorized for Find Matt requests."); }
+    catch (_) { notice("Setup link didn't work", "Copy the whole private setup link exactly as it was sent and open it again."); }
     return;
   }
-  if (!mattKey) return notice("This browser isn't set up as Matt's phone",
-    "Open your private setup link in this same browser, then tap the notification again. Each browser (Chrome, Safari, an app saved to the Home Screen) and each web address is set up separately.");
-  let req; try { req = JSON.parse(td.decode(b64u.dec(reqIn[1]))); } catch (_) { req = null; }
-  const r = req ? await addRequest(req) : "bad";
-  if (r === "blocked") return notice("Access is off", "You've turned off this person's access, so the request was declined. Turn it back on in Admin · People to let them find you.");
-  if (r === "answered") return notice("Already answered", "You've already accepted or denied this request.");
-  if (r === "bad") return notice("Couldn't open this request", "The link is incomplete or wasn't sent from Find Matt.");
-  if (reqIn[2] === "accept") approve(req.id);
+  if (!mattKey) return recoverMattBrowser(reqIn[1], reqIn[2] === "accept");
+  await openMattRequest(reqIn[1], reqIn[2] === "accept");
 }
 addEventListener("hashchange", handleLink);
 $("findBtn").onclick = () => {
