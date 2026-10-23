@@ -84,7 +84,7 @@ const digits = p => String(p || "").replace(/\D/g, "");
 const jget = k => { try { return JSON.parse(load(k) || "null"); } catch (_) { return null; } };
 const jset = (k, v) => store(k, v == null ? null : JSON.stringify(v));
 const color = r => ROLE_COLOR[r] || "#14202b";
-const msgLink = (p, ev) => digits(p?.phone) ? "https://wa.me/" + digits(p.phone) : (ev?.group || "https://wa.me/16288671487?text=Hi%20C%C3%BClinary%20Expr%C3%A9ss%21%20I%27m%20at%20the%20event%20and%20would%20like%20assistance.");
+const msgLink = (p, ev) => digits(p?.phone) ? "https://wa.me/" + digits(p.phone) : (ev?.group || "https://wa.me/18326939729?text=Hi%20C%C3%BClinary%20Expr%C3%A9ss%21%20I%27m%20at%20the%20event%20and%20would%20like%20assistance.");
 const encCfg = cfg => b64u.enc(te.encode(JSON.stringify(cfg)));
 const decCfg = s => JSON.parse(td.decode(b64u.dec(s)));
 // Dates and times: the event has a date and a start/end time; each person has their own shift.
