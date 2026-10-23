@@ -119,6 +119,8 @@ ol.steps .d{font:13px var(--mono);color:var(--muted);font-variant-numeric:tabula
 .version{margin:0;order:99;font-size:11px;color:var(--muted);text-align:center}
 @media (prefers-reduced-motion:reduce){.arrow svg{transition:none}}
 
+@font-face{font-family:'Bauer Bodoni';font-style:normal;font-weight:400;font-display:swap;src:url('assets/BauerBodoni-Roman.ttf') format('truetype')}
+
 /* Cülinary Expréss high-fidelity system */
 :root{
   --bg:#edf1f2;--panel:#ffffff;--fg:#141715;--muted:#66747a;--line:#d7e0e3;
@@ -145,6 +147,8 @@ ol.steps li.cur{background:#e4f8ef;box-shadow:inset 4px 0 0 #17865f}ol.steps .no
 .leaflet-tile-pane{filter:grayscale(.35) saturate(.72) contrast(.96)}
 .leaflet-control-attribution{font-size:9px!important;color:#66747a!important;background:rgba(255,255,255,.82)!important}
 .version{letter-spacing:.05em;text-transform:uppercase}
+
+.human-support{display:grid;gap:7px;padding:5px 0 7px}.human-support .eyebrow{margin:0;color:#17865f;font-size:9px;font-weight:800;letter-spacing:.16em;text-transform:uppercase}.human-support h1{margin:0;font:400 40px/.88 'Bauer Bodoni','Times New Roman',serif;letter-spacing:-.015em}.human-support .intro{margin:3px 0 5px;color:var(--muted);font-size:12px;line-height:1.5}.whatsapp-jump{display:flex;align-items:center;justify-content:center;min-height:45px;padding:11px 14px;border-radius:10px;color:#fff;background:#17865f;font-size:13px;font-weight:800;text-decoration:none}.whatsapp-jump:hover{background:#116b4b}.whatsapp-jump:focus-visible{outline:3px solid rgba(81,201,153,.35);outline-offset:2px}
 @media(min-width:900px){.panel{width:430px;padding:20px 22px calc(18px + env(safe-area-inset-bottom))}.ce-brand{margin-bottom:3px}}
 @media(max-width:899px){.ce-brand{position:sticky;top:0;z-index:20;margin:-12px -16px 2px;padding:11px 16px;background:rgba(255,255,255,.96);backdrop-filter:blur(12px)}.ce-brand img{width:46px;height:46px}.ce-brand strong{font-size:17px}}
 </style>
@@ -162,6 +166,12 @@ ol.steps li.cur{background:#e4f8ef;box-shadow:inset 4px 0 0 #17865f}ol.steps .no
     <img src="assets/express-logo.png" alt="The Expréss">
     <div><strong>Cülinary Expréss</strong><span>Expréss Walker · Live event concierge</span></div>
   </div>
+  <section class="human-support" aria-labelledby="humanSupportTitle">
+    <p class="eyebrow">Live human assistance</p>
+    <h1 id="humanSupportTitle">Find your<br>event team.</h1>
+    <p class="intro">Connect directly with a real Cülinary Expréss team member for help during your event.</p>
+    <a class="whatsapp-jump" href="https://wa.me/16288671487?text=Hi%20C%C3%BClinary%20Expr%C3%A9ss%21%20I%27m%20at%20the%20event%20and%20would%20like%20assistance." target="_blank" rel="noopener">Jump to WhatsApp</a>
+  </section>
   <form class="route-form" id="destForm">
     <div class="fields">
       <label class="field"><span class="lbl">From</span>
