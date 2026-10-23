@@ -33,14 +33,14 @@
 -->
 <style>
 :root{
-  --ink:#0B0B0B; --paper:#FFFFFF; --line:#D9D6CF; --muted:#5E5A54; --soft:#F3F1EC;
-  --red:#C1272D; --red-ink:#8E1C21; --green:#1F7A4D; --amber:#B26A00; --wa:#1DA851;
+  --ink:#0B0B0B; --paper:#FFFFFF; --line:#D7E0E3; --muted:#66747A; --soft:#EDF2F3;
+  --red:#111210; --red-ink:#111210; --green:#17865F; --amber:#247C5D; --wa:#1DA851;
   --radius:14px;
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
-    --ink:#F4F2EE; --paper:#111111; --line:#2E2C29; --muted:#A8A39B; --soft:#1B1A18;
-    --red:#E0484E; --red-ink:#FF8A8F; --green:#43B37A; --amber:#E0A040; --wa:#2BC864;
+    --ink:#F7FAF9; --paper:#111312; --line:#303936; --muted:#A8B4B0; --soft:#1A201E;
+    --red:#66E0AD; --red-ink:#82E9BE; --green:#66E0AD; --amber:#82E9BE; --wa:#2BC864;
   }
 }
 *{box-sizing:border-box}
@@ -120,11 +120,13 @@ input:focus,select:focus,button:focus-visible{outline:3px solid var(--red);outli
 footer{margin-top:28px;font-size:12px;color:var(--muted);font-family:'Courier Prime',monospace}
 [hidden]{display:none!important}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+.brand{align-items:center}.brand img{width:48px;height:48px;object-fit:cover;border-radius:50%;border:1px solid #343633}.brand>span{display:grid;opacity:1!important}.brand b{font-family:'Alfa Slab One',serif;font-size:18px}.brand small{font-family:'Courier Prime',monospace;font-size:9px;letter-spacing:.14em;text-transform:uppercase;opacity:.68}.card{box-shadow:0 8px 26px rgba(23,38,31,.06)}
 </style>
 </head>
 <body>
 <header class="top"><div class="row">
-  <div class="brand"><b>Find my team</b><span id="hdrEvent">Culinary Express</span></div>
+  <div class="brand"><img src="assets/express-logo.png" alt="The Expréss"><span><b>Expréss Walker</b><small id="hdrEvent">Cülinary Expréss</small></span></div>
   <span class="tag" id="hdrRole">Setup</span>
 </div></header>
 
@@ -147,7 +149,7 @@ footer{margin-top:28px;font-size:12px;color:var(--muted);font-family:'Courier Pr
   </div>
   <div class="fact">
     <a class="btn" id="fMaps" target="_blank" rel="noopener">Walking directions</a>
-    <a class="btn wa" id="fMsg" target="_blank" rel="noopener">Message</a>
+    <a class="btn wa" id="fMsg" target="_blank" rel="noopener">WhatsApp</a>
   </div>
 </div>
 
@@ -402,7 +404,7 @@ function drawTeam(){
       <div class="dist">${d!=null?`<span class="arrow" style="transform:rotate(${rot}deg)" aria-hidden="true">↑</span> ${fmtDist(d)}<small>±${Math.round(pos.acc||0)} m</small>`:''}</div>
       <div class="pact">
         <button class="btn sm dark" data-find="${p.id}" ${on?'':'disabled'} aria-label="Find ${esc(p.name)}">Find</button>
-        ${msg?`<a class="btn sm wa" href="${esc(msg)}" target="_blank" rel="noopener" aria-label="${digits(p.phone)?`Message ${esc(p.name)} on WhatsApp`:'Open the team WhatsApp group'}">${digits(p.phone)?'Message':'Team chat'}</a>`:`<button class="btn sm ghost" disabled>No WhatsApp</button>`}
+        ${msg?`<a class="btn sm wa" href="${esc(msg)}" target="_blank" rel="noopener" aria-label="${digits(p.phone)?`Message ${esc(p.name)} on WhatsApp`:'Open the team WhatsApp group'}">${digits(p.phone)?'WhatsApp':'WhatsApp group'}</a>`:`<button class="btn sm ghost" disabled>WhatsApp unavailable</button>`}
       </div>
     </div>`;
   }).join('');

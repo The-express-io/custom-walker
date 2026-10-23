@@ -607,8 +607,8 @@ function liveRefresh() {
       el("div", { class: "acts" },
         guide === p.id ? el("button", { type: "button", class: "ghost", onclick: stopFind }, "Stop directions")
           : el("button", { type: "button", ...(live ? {} : { disabled: "" }), onclick: () => find(p.id) }, live ? "Find " + p.name.split(" ")[0] : "Find"),
-        msg ? el("a", { class: "btn wa", href: msg, target: "_blank", rel: "noopener" }, digits(p.phone) ? "Message" : "Team chat")
-            : el("button", { type: "button", class: "ghost", disabled: "" }, "No WhatsApp")));
+        msg ? el("a", { class: "btn wa", href: msg, target: "_blank", rel: "noopener" }, digits(p.phone) ? "WhatsApp" : "WhatsApp group")
+            : el("button", { type: "button", class: "ghost", disabled: "" }, "WhatsApp unavailable")));
   });
   const tip = !last && others.some(p => pos[p.id]) ? el("span", { class: "muted" }, "Check in or tap Start tracking to see how far away each person is.") : null;
   list.replaceChildren(...(tip ? [tip] : []), ...(rows.length ? rows : [el("span", { class: "muted" }, "No one else on this team yet.")]));
